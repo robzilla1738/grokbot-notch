@@ -16,4 +16,4 @@ Contributions, bug reports, and pull requests are welcome!
    ```bash
    npm run build:mac && npm start
    ```
-3. You can also preview the Notch UI in a standard browser at `http://127.0.0.1:4789`.
+3. You can also preview the Notch UI in a standard browser at `http://127.0.0.1:4789` (the server injects the per-launch auth token into `index.html` for loopback requests; API calls from `app.js` use that token automatically).

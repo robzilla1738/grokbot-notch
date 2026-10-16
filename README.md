@@ -92,6 +92,28 @@ grokbot-notch/
 
 ---
 
+## 🔒 Local bridge security
+
+The Node bridge binds to **127.0.0.1 only** and rejects requests whose `Host` is not `127.0.0.1:4789` / `localhost:4789` or whose `Origin` (when present) is not the matching loopback URL. This blocks DNS rebinding and cross-site browser access.
+
+Each server launch gets a random **32-byte auth token** (also writable via `GROKBOT_NOTCH_AUTH_TOKEN` when the Swift app spawns the process). The token is stored at:
+
+`~/Library/Application Support/GrokBot Notch/launch-auth-token` (mode `0600`)
+
+All `/api/*` routes require `Authorization: Bearer <token>` (or `X-GrokBot-Notch-Token`). The Notch web UI receives the token via injected HTML / a Swift `WKUserScript`; `public/app.js` sends it on every API call.
+
+Manual health check:
+
+```bash
+TOKEN="$(cat "$HOME/Library/Application Support/GrokBot Notch/launch-auth-token")"
+curl -s -H "Authorization: Bearer $TOKEN" -H "Host: 127.0.0.1:4789" \
+  http://127.0.0.1:4789/api/bootstrap | head -c 400
+```
+
+Server logs from `npm start` go to `~/Library/Logs/grokbot-notch/server.log` (directory `0700`, log file `0600`).
+
+---
+
 ## 🔧 Requirements
 
 - **macOS 13.0+** (Apple Silicon or Intel)

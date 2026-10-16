@@ -18,6 +18,15 @@ if (!isNativeHost) {
   document.body.classList.add("browser-preview");
 }
 
+function apiFetch(url, options = {}) {
+  const headers = new Headers(options.headers || {});
+  const token = window.__GROKBOT_NOTCH_AUTH_TOKEN;
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+  return fetch(url, { ...options, headers });
+}
+
 function postNativeMessage(payload) {
   try {
     window.webkit?.messageHandlers?.notchHost?.postMessage(payload);
@@ -537,7 +546,7 @@ async function startVoiceCall() {
   renderPouch();
 
   try {
-    const startRes = await fetch("/api/voice/start", {
+    const startRes = await apiFetch("/api/voice/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -758,7 +767,7 @@ async function startVoiceCall() {
     transcriptPollInterval = setInterval(async () => {
       if (!activeSession || state.call.phase !== "live") return;
       try {
-        const res = await fetch(`/api/bot/${encodeURIComponent(bot.id)}/transcript?callId=${encodeURIComponent(callId)}`).then((r) => r.json());
+        const res = await apiFetch(`/api/bot/${encodeURIComponent(bot.id)}/transcript?callId=${encodeURIComponent(callId)}`).then((r) => r.json());
         if (Array.isArray(res?.voiceUpdates)) {
           for (const upd of res.voiceUpdates) {
             if (seenVoiceUpdateIds.has(upd.id)) continue;
@@ -792,7 +801,7 @@ async function handleVoiceToolCall({ ws, audioPipeline, bot, callId, plan, toolC
   renderPouch();
 
   if (toolName === "end_the_call") {
-    fetch("/api/voice/tool", {
+    apiFetch("/api/voice/tool", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ agentId: bot.id, callId, name: toolName, input: parsedArgs })
@@ -814,7 +823,7 @@ async function handleVoiceToolCall({ ws, audioPipeline, bot, callId, plan, toolC
   }
 
   try {
-    const toolRes = await fetch("/api/voice/tool", {
+    const toolRes = await apiFetch("/api/voice/tool", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -921,7 +930,7 @@ async function selectBot(botId) {
   botEngine.poke("spin");
   renderPouch();
 
-  fetch("/api/select-bot", {
+  apiFetch("/api/select-bot", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ botId: bot.id })
@@ -1014,14 +1023,14 @@ dom.typeForm.addEventListener("submit", async (e) => {
 
   let baselineIds = new Set();
   try {
-    const before = await fetch(`/api/bot/${encodeURIComponent(bot.id)}/transcript`).then((r) => r.json());
+    const before = await apiFetch(`/api/bot/${encodeURIComponent(bot.id)}/transcript`).then((r) => r.json());
     if (Array.isArray(before?.entries)) {
       baselineIds = new Set(before.entries.map((entry) => entry.id));
     }
   } catch {}
 
   try {
-    const sendRes = await fetch(`/api/bot/${encodeURIComponent(bot.id)}/message`, {
+    const sendRes = await apiFetch(`/api/bot/${encodeURIComponent(bot.id)}/message`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text })
@@ -1049,7 +1058,7 @@ dom.typeForm.addEventListener("submit", async (e) => {
         return;
       }
       try {
-        const res = await fetch(`/api/bot/${encodeURIComponent(targetBotId)}/transcript`).then((r) => r.json());
+        const res = await apiFetch(`/api/bot/${encodeURIComponent(targetBotId)}/transcript`).then((r) => r.json());
         if (Array.isArray(res?.entries)) {
           const fresh = res.entries.filter((entry) => entry.role === "assistant" && !baselineIds.has(entry.id));
           if (fresh.length > 0) {
@@ -1156,7 +1165,7 @@ window.__onNativeCursorMove = (localX, localY) => {
 
 async function refreshBootstrap() {
   try {
-    const data = await fetch("/api/bootstrap").then((r) => r.json());
+    const data = await apiFetch("/api/bootstrap").then((r) => r.json());
     if (!data.ok || !Array.isArray(data.bots)) return;
 
     const accountChanged =

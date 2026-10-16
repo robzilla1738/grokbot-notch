@@ -19,7 +19,12 @@ const GROKBOT_DOT_SETTINGS = path.join(HOME, ".grokbot/settings.json");
 const PERSISTENCE_DIR = path.join(GROKBOT_SUPPORT_DIR, "sand-client-persistence");
 const ROSTER_AVATARS_DIR = path.join(GROKBOT_SUPPORT_DIR, "roster-avatars");
 const LOCAL_STATE_FILE = path.join(HOME, ".grokbot-notch-state.json");
+const NOTCH_SUPPORT_DIR = path.join(HOME, "Library/Application Support/GrokBot Notch");
+const AUTH_TOKEN_FILE = path.join(NOTCH_SUPPORT_DIR, "launch-auth-token");
 const BACKEND_BASE = process.env.SAND_BACKEND_URL || "https://api2.cursor.sh";
+
+const ALLOWED_HOSTS = new Set(["127.0.0.1:4789", "localhost:4789"]);
+const ALLOWED_ORIGINS = new Set(["http://127.0.0.1:4789", "http://localhost:4789"]);
 
 const BASE32_ALPHABET = "abcdefghijklmnopqrstuvwxyz234567";
 
@@ -156,7 +161,9 @@ function readLocalNotchState() {
 }
 
 function writeLocalNotchState(patch) {
-  const next = { ...readLocalNotchState(), ...patch, updatedAt: Date.now() };
+  const { safeStorageKeyBase64: _drop, ...safePatch } = patch || {};
+  const next = { ...readLocalNotchState(), ...safePatch, updatedAt: Date.now() };
+  delete next.safeStorageKeyBase64;
   try {
     fs.writeFileSync(LOCAL_STATE_FILE, JSON.stringify(next, null, 2), { mode: 0o600 });
   } catch {
@@ -165,28 +172,96 @@ function writeLocalNotchState(patch) {
   return next;
 }
 
+function scrubSafeStorageKeyFromPersistedState() {
+  try {
+    if (!fs.existsSync(LOCAL_STATE_FILE)) return;
+    const saved = readLocalNotchState();
+    if (!saved.safeStorageKeyBase64) return;
+    delete saved.safeStorageKeyBase64;
+    fs.writeFileSync(LOCAL_STATE_FILE, JSON.stringify(saved, null, 2), { mode: 0o600 });
+  } catch {
+    // ignore
+  }
+}
+
+function ensureNotchSupportDir() {
+  fs.mkdirSync(NOTCH_SUPPORT_DIR, { recursive: true, mode: 0o700 });
+  try {
+    fs.chmodSync(NOTCH_SUPPORT_DIR, 0o700);
+  } catch {
+    // ignore
+  }
+}
+
+function initLaunchAuthToken() {
+  const fromEnv = process.env.GROKBOT_NOTCH_AUTH_TOKEN;
+  const token =
+    typeof fromEnv === "string" && fromEnv.length >= 32
+      ? fromEnv
+      : crypto.randomBytes(32).toString("base64url");
+  ensureNotchSupportDir();
+  try {
+    fs.writeFileSync(AUTH_TOKEN_FILE, token, { mode: 0o600, encoding: "utf8" });
+  } catch (err) {
+    console.error("[gb-notch] Failed to write launch auth token file:", err.message);
+  }
+  return token;
+}
+
+const LAUNCH_AUTH_TOKEN = initLaunchAuthToken();
+
+function authTokenMatches(provided) {
+  if (typeof provided !== "string" || provided.length === 0) return false;
+  const a = Buffer.from(provided, "utf8");
+  const b = Buffer.from(LAUNCH_AUTH_TOKEN, "utf8");
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+function extractLaunchAuthToken(req) {
+  const auth = req.headers.authorization;
+  if (typeof auth === "string" && auth.startsWith("Bearer ")) {
+    return auth.slice("Bearer ".length);
+  }
+  const custom = req.headers["x-grokbot-notch-token"];
+  if (typeof custom === "string") return custom;
+  return null;
+}
+
+function validateHostAndOrigin(req) {
+  const host = String(req.headers.host || "").toLowerCase();
+  if (!ALLOWED_HOSTS.has(host)) {
+    return { ok: false, status: 403, error: "Invalid Host" };
+  }
+  const origin = req.headers.origin;
+  if (origin && !ALLOWED_ORIGINS.has(origin)) {
+    return { ok: false, status: 403, error: "Invalid Origin" };
+  }
+  return { ok: true, origin: origin || null };
+}
+
+function corsHeadersForOrigin(origin) {
+  if (!origin || !ALLOWED_ORIGINS.has(origin)) return {};
+  return {
+    "Access-Control-Allow-Origin": origin,
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-GrokBot-Notch-Token",
+    Vary: "Origin"
+  };
+}
+
+scrubSafeStorageKeyFromPersistedState();
+
 let cachedSafeStorageKey = undefined;
 function getSafeStorageKey() {
   if (cachedSafeStorageKey !== undefined) return cachedSafeStorageKey;
-  const saved = readLocalNotchState();
-  if (saved.safeStorageKeyBase64) {
-    try {
-      const buf = Buffer.from(saved.safeStorageKeyBase64, "base64");
-      if (buf.length === 16) {
-        cachedSafeStorageKey = buf;
-        return cachedSafeStorageKey;
-      }
-    } catch {}
-  }
   try {
     const pw = execFileSync(
       "/usr/bin/security",
       ["find-generic-password", "-w", "-s", "Grok Bot Safe Storage"],
       { encoding: "utf8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"] }
     ).trim();
-    const key = crypto.pbkdf2Sync(pw, "saltysalt", 1003, 16, "sha1");
-    cachedSafeStorageKey = key;
-    writeLocalNotchState({ safeStorageKeyBase64: key.toString("base64") });
+    cachedSafeStorageKey = crypto.pbkdf2Sync(pw, "saltysalt", 1003, 16, "sha1");
     return cachedSafeStorageKey;
   } catch {
     cachedSafeStorageKey = null;
@@ -823,15 +898,22 @@ function readJsonBody(req) {
   });
 }
 
-function sendJson(res, status, payload) {
+function sendJson(res, status, payload, extraHeaders = {}) {
   const body = JSON.stringify(payload);
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type"
+    ...extraHeaders
   });
   res.end(body);
+}
+
+function injectAuthTokenIntoHtml(html) {
+  const escaped = LAUNCH_AUTH_TOKEN.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+  const snippet = `<script>window.__GROKBOT_NOTCH_AUTH_TOKEN='${escaped}';</script>`;
+  if (html.includes("</head>")) {
+    return html.replace("</head>", `${snippet}</head>`);
+  }
+  return `${snippet}${html}`;
 }
 
 const MIME_TYPES = {
@@ -846,33 +928,44 @@ const MIME_TYPES = {
 };
 
 const server = http.createServer(async (req, res) => {
+  const security = validateHostAndOrigin(req);
+  const cors = corsHeadersForOrigin(security.origin);
+
+  if (!security.ok) {
+    return sendJson(res, security.status, { ok: false, error: security.error });
+  }
+
   if (req.method === "OPTIONS") {
-    res.writeHead(204, {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type"
-    });
+    res.writeHead(204, cors);
     return res.end();
   }
 
   const parsedUrl = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
   const pathname = parsedUrl.pathname;
+  const isApiRoute = pathname === "/api" || pathname.startsWith("/api/");
+
+  if (isApiRoute) {
+    const token = extractLaunchAuthToken(req);
+    if (!authTokenMatches(token)) {
+      return sendJson(res, 401, { ok: false, error: "Unauthorized" }, cors);
+    }
+  }
 
   try {
     if (req.method === "GET" && pathname === "/api/bootstrap") {
       const data = await getBootstrapData();
-      return sendJson(res, 200, data);
+      return sendJson(res, 200, data, cors);
     }
 
     if (req.method === "POST" && pathname === "/api/select-bot") {
       const body = await readJsonBody(req);
-      if (!body.botId) return sendJson(res, 400, { ok: false, error: "Missing botId" });
+      if (!body.botId) return sendJson(res, 400, { ok: false, error: "Missing botId" }, cors);
       const localSnap = readLocalPersistenceSnapshot();
       const scope = scopeForAgentId(body.botId, localSnap) || localSnap.activeAccountScope || "default";
       const curState = readLocalNotchState();
       const selectedBotByScope = { ...(curState.selectedBotByScope || {}), [scope]: body.botId };
       writeLocalNotchState({ selectedBotId: body.botId, selectedBotByScope });
-      return sendJson(res, 200, { ok: true, selectedBotId: body.botId });
+      return sendJson(res, 200, { ok: true, selectedBotId: body.botId }, cors);
     }
 
     if (req.method === "POST" && pathname === "/api/voice/start") {
@@ -880,7 +973,7 @@ const server = http.createServer(async (req, res) => {
       const bootstrap = await getBootstrapData();
       const bot = bootstrap.bots.find((b) => b.id === body.agentId) || bootstrap.bots[0];
       if (!bot) {
-        return sendJson(res, 404, { ok: false, error: "No Grok Bot found" });
+        return sendJson(res, 404, { ok: false, error: "No Grok Bot found" }, cors);
       }
 
       const callId = `call-${crypto.randomUUID()}`;
@@ -925,7 +1018,7 @@ const server = http.createServer(async (req, res) => {
             instructions: "The job is under way. Keep talking naturally."
           }
         }
-      });
+      }, cors);
     }
 
     if (req.method === "POST" && pathname === "/api/voice/tool") {
@@ -947,13 +1040,13 @@ const server = http.createServer(async (req, res) => {
         ok: true,
         kind: rpcRes.kind,
         output: rpcRes.output ?? {}
-      });
+      }, cors);
     }
 
     if (req.method === "POST" && pathname === "/api/voice/settings") {
       const body = await readJsonBody(req);
       const { agentId, voiceId, voiceSpeed, voiceLanguage } = body;
-      if (!agentId) return sendJson(res, 400, { ok: false, error: "Missing agentId" });
+      if (!agentId) return sendJson(res, 400, { ok: false, error: "Missing agentId" }, cors);
 
       const state = readLocalNotchState();
       const voiceOverrides = state.voiceOverrides || {};
@@ -976,7 +1069,7 @@ const server = http.createServer(async (req, res) => {
         console.warn("[gb-notch] SetGrokBotAgentVoice warning:", err.message);
       }
 
-      return sendJson(res, 200, { ok: true, voiceSettings: voiceOverrides[agentId] });
+      return sendJson(res, 200, { ok: true, voiceSettings: voiceOverrides[agentId] }, cors);
     }
 
     const transcriptMatch = /^\/api\/bot\/([^/]+)\/transcript$/.exec(pathname);
@@ -984,7 +1077,7 @@ const server = http.createServer(async (req, res) => {
       const agentId = decodeURIComponent(transcriptMatch[1]);
       const callId = parsedUrl.searchParams.get("callId");
       const data = await getBotTranscript(agentId, callId);
-      return sendJson(res, 200, data);
+      return sendJson(res, 200, data, cors);
     }
 
     const messageMatch = /^\/api\/bot\/([^/]+)\/message$/.exec(pathname);
@@ -992,7 +1085,7 @@ const server = http.createServer(async (req, res) => {
       const agentId = decodeURIComponent(messageMatch[1]);
       const body = await readJsonBody(req);
       const text = String(body.text || "").trim();
-      if (!text) return sendJson(res, 400, { ok: false, error: "Empty message" });
+      if (!text) return sendJson(res, 400, { ok: false, error: "Empty message" }, cors);
 
       const localSnap = readLocalPersistenceSnapshot();
       const targetScope = scopeForAgentId(agentId, localSnap);
@@ -1024,16 +1117,16 @@ const server = http.createServer(async (req, res) => {
           ok: false,
           error: rpcRes?.refusal?.message || "Message refused by Grok Bot",
           response: rpcRes
-        });
+        }, cors);
       }
 
-      return sendJson(res, 200, { ok: true, messageId, response: rpcRes });
+      return sendJson(res, 200, { ok: true, messageId, response: rpcRes }, cors);
     }
 
     const openMatch = /^\/api\/bot\/([^/]+)\/open-desktop$/.exec(pathname);
     if (req.method === "POST" && openMatch) {
       execFile("/usr/bin/open", ["-a", "/Applications/Grok Bot.app"], () => {});
-      return sendJson(res, 200, { ok: true });
+      return sendJson(res, 200, { ok: true }, cors);
     }
 
     // Serve static files from public/
@@ -1043,22 +1136,31 @@ const server = http.createServer(async (req, res) => {
 
     if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
       const ext = path.extname(fullPath).toLowerCase();
-      res.writeHead(200, {
+      const baseHeaders = {
         "Content-Type": MIME_TYPES[ext] || "application/octet-stream",
-        "Cache-Control": "no-cache"
-      });
+        "Cache-Control": "no-cache",
+        ...cors
+      };
+      if (ext === ".html") {
+        const html = fs.readFileSync(fullPath, "utf8");
+        const body = injectAuthTokenIntoHtml(html);
+        res.writeHead(200, baseHeaders);
+        res.end(body);
+        return;
+      }
+      res.writeHead(200, baseHeaders);
       fs.createReadStream(fullPath).pipe(res);
       return;
     }
 
-    sendJson(res, 404, { ok: false, error: "Not found" });
+    sendJson(res, 404, { ok: false, error: "Not found" }, cors);
   } catch (err) {
     console.error("[gb-notch] API error:", err);
     sendJson(res, err.status || 500, {
       ok: false,
       error: err.message || "Internal error",
       refusal: err.refusal || null
-    });
+    }, cors);
   }
 });
 

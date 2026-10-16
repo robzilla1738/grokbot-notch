@@ -30,7 +30,9 @@ npm run install:app
 
 1. Verify the local bridge server is healthy and discovers the user's GrokBots:
    ```bash
-   curl -s http://127.0.0.1:4789/api/bootstrap | head -c 400
+   TOKEN="$(cat "$HOME/Library/Application Support/GrokBot Notch/launch-auth-token")"
+   curl -s -H "Authorization: Bearer $TOKEN" -H "Host: 127.0.0.1:4789" \
+     http://127.0.0.1:4789/api/bootstrap | head -c 400
    ```
    Confirm `"ok":true` and that `"bots"` is populated.
 2. Verify the native macOS Notch app process (`GrokBotNotch`) is running:
