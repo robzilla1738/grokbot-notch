@@ -826,12 +826,17 @@ function readJsonBody(req) {
 function sendJson(res, status, payload) {
   const body = JSON.stringify(payload);
   res.writeHead(status, {
-    "Content-Type": "application/json; charset=utf-8",
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type"
+    "Content-Type": "application/json; charset=utf-8"
   });
   res.end(body);
+}
+
+const ALLOWED_HOSTS = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`]);
+const ALLOWED_ORIGINS = new Set([`http://127.0.0.1:${PORT}`, `http://localhost:${PORT}`]);
+
+function rejectRequest(res, status) {
+  res.writeHead(status);
+  res.end();
 }
 
 const MIME_TYPES = {
@@ -846,17 +851,33 @@ const MIME_TYPES = {
 };
 
 const server = http.createServer(async (req, res) => {
+  if (!ALLOWED_HOSTS.has(req.headers.host || "")) {
+    return rejectRequest(res, 403);
+  }
+
   if (req.method === "OPTIONS") {
-    res.writeHead(204, {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type"
-    });
-    return res.end();
+    return rejectRequest(res, 403);
   }
 
   const parsedUrl = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
   const pathname = parsedUrl.pathname;
+
+  if (pathname.startsWith("/api/")) {
+    const origin = req.headers.origin;
+    if (origin && !ALLOWED_ORIGINS.has(origin)) {
+      return rejectRequest(res, 403);
+    }
+    const fetchSite = req.headers["sec-fetch-site"];
+    if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") {
+      return rejectRequest(res, 403);
+    }
+    if (req.method === "POST") {
+      const contentType = String(req.headers["content-type"] || "");
+      if (!contentType.toLowerCase().startsWith("application/json")) {
+        return rejectRequest(res, 415);
+      }
+    }
+  }
 
   try {
     if (req.method === "GET" && pathname === "/api/bootstrap") {
