@@ -2,6 +2,7 @@ import Cocoa
 import WebKit
 import AVFoundation
 import Carbon
+import Security
 
 // Global reference for Carbon HotKey C callback
 private weak var sharedAppDelegate: AppDelegate?
@@ -233,6 +234,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     private var webView: NotchWebView!
     private var statusItem: NSStatusItem!
     private var serverProcess: Process?
+    private var launchAuthToken: String?
     private let audioController = NativeVoiceAudioController()
 
     private let panelWidth: CGFloat = 400
@@ -374,20 +376,81 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
 
     // MARK: - Node Server Management
-    private func ensureNodeServerRunning(completion: @escaping () -> Void) {
+    private func launchAuthTokenFilePath() -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return "\(home)/Library/Application Support/GrokBot Notch/launch-auth-token"
+    }
+
+    private func readLaunchAuthTokenFromDisk() -> String? {
+        let path = launchAuthTokenFilePath()
+        guard let raw = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
+        let token = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return token.isEmpty ? nil : token
+    }
+
+    private func generateLaunchAuthToken() -> String {
+        var bytes = [UInt8](repeating: 0, count: 32)
+        guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
+            return UUID().uuidString.replacingOccurrences(of: "-", with: "") + UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        }
+        let data = Data(bytes)
+        return data.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    private func resolveLaunchAuthToken() -> String? {
+        if let token = launchAuthToken, !token.isEmpty { return token }
+        if let disk = readLaunchAuthTokenFromDisk() {
+            launchAuthToken = disk
+            return disk
+        }
+        return nil
+    }
+
+    private func bootstrapHealthCheck(token: String?, completion: @escaping (Bool) -> Void) {
         guard let url = URL(string: "http://127.0.0.1:4789/api/bootstrap") else {
-            completion()
+            completion(false)
             return
         }
         var req = URLRequest(url: url)
         req.timeoutInterval = 0.6
-        URLSession.shared.dataTask(with: req) { [weak self] _, response, _ in
-            if let http = response as? HTTPURLResponse, http.statusCode == 200 {
+        if let token = token, !token.isEmpty {
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        URLSession.shared.dataTask(with: req) { _, response, _ in
+            let ok = (response as? HTTPURLResponse)?.statusCode == 200
+            completion(ok)
+        }.resume()
+    }
+
+    private func ensureNodeServerRunning(completion: @escaping () -> Void) {
+        if launchAuthToken == nil {
+            launchAuthToken = readLaunchAuthTokenFromDisk()
+        }
+        bootstrapHealthCheck(token: launchAuthToken) { [weak self] healthy in
+            guard let self = self else {
                 completion()
                 return
             }
-            self?.spawnEmbeddedNodeServer(completion: completion)
-        }.resume()
+            if healthy {
+                completion()
+                return
+            }
+            if self.launchAuthToken == nil, let diskToken = self.readLaunchAuthTokenFromDisk() {
+                self.launchAuthToken = diskToken
+                self.bootstrapHealthCheck(token: diskToken) { healthyWithDisk in
+                    if healthyWithDisk {
+                        completion()
+                    } else {
+                        self.spawnEmbeddedNodeServer(completion: completion)
+                    }
+                }
+                return
+            }
+            self.spawnEmbeddedNodeServer(completion: completion)
+        }
     }
 
     private func spawnEmbeddedNodeServer(completion: @escaping () -> Void) {
@@ -418,6 +481,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             proc.arguments = [serverPath]
         }
         proc.currentDirectoryURL = URL(fileURLWithPath: (serverPath as NSString).deletingLastPathComponent)
+        let token = generateLaunchAuthToken()
+        self.launchAuthToken = token
+        var env = ProcessInfo.processInfo.environment
+        env["GROKBOT_NOTCH_AUTH_TOKEN"] = token
+        proc.environment = env
         do {
             try proc.run()
             self.serverProcess = proc
@@ -425,7 +493,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             NSLog("[GrokBotNotch] Failed to start server.mjs: \(error)")
         }
 
-        DispatchQueue.global().asyncAfter(deadline: .now() + 0.55) {
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.55) { [weak self] in
+            if self?.resolveLaunchAuthToken() == nil {
+                self?.launchAuthToken = self?.readLaunchAuthTokenFromDisk()
+            }
             completion()
         }
     }
@@ -480,6 +551,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         let config = WKWebViewConfiguration()
         config.userContentController.add(self, name: "notchHost")
         config.mediaTypesRequiringUserActionForPlayback = []
+
+        if let token = resolveLaunchAuthToken() {
+            let escaped = token
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "'", with: "\\'")
+            let scriptSource = "window.__GROKBOT_NOTCH_AUTH_TOKEN='\(escaped)';"
+            let userScript = WKUserScript(source: scriptSource, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+            config.userContentController.addUserScript(userScript)
+        }
 
         webView = NotchWebView(frame: NSRect(x: 0, y: 0, width: panelWidth, height: panelHeight), configuration: config)
         webView.uiDelegate = self
