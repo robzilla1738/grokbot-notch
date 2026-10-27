@@ -20,7 +20,11 @@ cp "$ROOT_DIR/server.mjs" "$RESOURCES_DIR/app/server.mjs"
 cp "$ROOT_DIR/package.json" "$RESOURCES_DIR/app/package.json"
 cp -R "$ROOT_DIR/public" "$RESOURCES_DIR/app/public"
 
+# swiftc defaults the deployment target to the active SDK (currently macOS 28),
+# which Launch Services rejects on older systems with error -10825.
+ARCH="$(uname -m)"
 swiftc -O \
+  -target "${ARCH}-apple-macosx13.0" \
   -framework Cocoa \
   -framework WebKit \
   -framework AVFoundation \
