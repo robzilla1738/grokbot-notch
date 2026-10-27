@@ -123,6 +123,15 @@ Server logs from `npm start` go to `~/Library/Logs/grokbot-notch/server.log` (di
 
 ---
 
+## 🙏 Contributors
+
+Thanks to everyone who has helped make GrokBot Notch better:
+
+- [@pymmog](https://github.com/pymmog): hardened the local bridge with a per-launch auth token, Host and Origin checks, no more saved Grok Bot storage key, and private log files ([#1](https://github.com/robzilla1738/grokbot-notch/pull/1))
+- [@cirne](https://github.com/cirne): pinned the macOS deployment target so the app launches again ([#2](https://github.com/robzilla1738/grokbot-notch/pull/2)), and found and fixed the cross-site access hole in the local API ([#3](https://github.com/robzilla1738/grokbot-notch/pull/3))
+
+---
+
 ## 📄 License
 
 [MIT](LICENSE)
