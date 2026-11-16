@@ -31,6 +31,24 @@ function postNativeMessage(payload) {
   try {
     window.webkit?.messageHandlers?.notchHost?.postMessage(payload);
   } catch {}
+  try {
+    window.grokbotNotchHost?.postMessage?.(payload);
+  } catch {}
+}
+
+function resampleToRate(samples, fromRate, toRate) {
+  if (!samples || fromRate === toRate) return samples;
+  const ratio = fromRate / toRate;
+  const outputLength = Math.max(1, Math.round(samples.length / ratio));
+  const resampled = new Float32Array(outputLength);
+  for (let index = 0; index < outputLength; index += 1) {
+    const sourcePosition = index * ratio;
+    const leftIndex = Math.floor(sourcePosition);
+    const rightIndex = Math.min(samples.length - 1, leftIndex + 1);
+    const blend = sourcePosition - leftIndex;
+    resampled[index] = samples[leftIndex] * (1 - blend) + samples[rightIndex] * blend;
+  }
+  return resampled;
 }
 
 // UI Sound Effects
@@ -124,6 +142,11 @@ const dom = {
   typeForm: document.getElementById("type-form"),
   typeInput: document.getElementById("type-input")
 };
+
+if (window.grokbotNotchHost) {
+  dom.collapsedBar.title = "Expand GrokBot Notch (Ctrl+Alt+Space)";
+  dom.botCharacterBtn.title = "Click to start / stop Voice Mode (Ctrl+Shift+G)";
+}
 
 function getSelectedBot() {
   return state.bots.find((b) => b.id === state.selectedBotId) || state.bots[0] || null;
@@ -346,7 +369,7 @@ class VoiceAudioPipeline {
     this.speechDrainedResolvers = [];
   }
 
-  async start() {
+  async start(existingStream = null) {
     if (this.useNativeAudio) {
       window.__onNativeMicFrame = (base64Pcm, rms) => {
         this.onEnergy?.(Math.min(1, rms * 4.5));
@@ -363,20 +386,28 @@ class VoiceAudioPipeline {
       return;
     }
 
-    this.stream = await navigator.mediaDevices.getUserMedia({
+    this.stream = existingStream || await navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
     });
-    this.ctx = new AudioContext({ sampleRate: 24000 });
+    try {
+      this.ctx = new AudioContext({ sampleRate: 24000, latencyHint: "interactive" });
+    } catch {
+      this.ctx = new AudioContext({ latencyHint: "interactive" });
+    }
+    if (this.ctx.state === "suspended") {
+      await this.ctx.resume();
+    }
     const source = this.ctx.createMediaStreamSource(this.stream);
     this.processor = this.ctx.createScriptProcessor(2048, 1, 1);
     this.processor.onaudioprocess = (ev) => {
-      const floatSamples = ev.inputBuffer.getChannelData(0);
+      const inputSamples = ev.inputBuffer.getChannelData(0);
+      const floatSamples = resampleToRate(inputSamples, this.ctx.sampleRate, 24000);
       let sum = 0;
       const int16 = new Int16Array(floatSamples.length);
-      for (let i = 0; i < floatSamples.length; i++) {
-        const s = Math.max(-1, Math.min(1, floatSamples[i]));
-        sum += s * s;
-        int16[i] = s < 0 ? s * 32768 : s * 32767;
+      for (let index = 0; index < floatSamples.length; index += 1) {
+        const sample = Math.max(-1, Math.min(1, floatSamples[index]));
+        sum += sample * sample;
+        int16[index] = sample < 0 ? sample * 32768 : sample * 32767;
       }
       const rms = Math.sqrt(sum / floatSamples.length);
       if (this.scheduledSources.size === 0) {
@@ -384,7 +415,9 @@ class VoiceAudioPipeline {
       }
       const bytes = new Uint8Array(int16.buffer);
       let binary = "";
-      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+      for (let byteIndex = 0; byteIndex < bytes.length; byteIndex += 1) {
+        binary += String.fromCharCode(bytes[byteIndex]);
+      }
       this.onPcm16Base64(btoa(binary));
     };
     this.silentGain = this.ctx.createGain();
@@ -545,7 +578,13 @@ async function startVoiceCall() {
   state.statusCaption = "Connecting…";
   renderPouch();
 
+  let primedMicStream = null;
   try {
+    if (!window.webkit?.messageHandlers?.notchHost) {
+      primedMicStream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+      });
+    }
     const startRes = await apiFetch("/api/voice/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -594,7 +633,8 @@ async function startVoiceCall() {
       }
     });
 
-    await audioPipeline.start();
+    await audioPipeline.start(primedMicStream);
+    primedMicStream = null;
 
     activeSession = {
       ws,
@@ -789,6 +829,9 @@ async function startVoiceCall() {
       } catch {}
     }, 2800);
   } catch (err) {
+    if (primedMicStream) {
+      for (const track of primedMicStream.getTracks()) track.stop();
+    }
     await stopVoiceCall({ silentChime: true });
     state.statusCaption = err.message;
     renderPouch();

@@ -36,6 +36,28 @@ To also install `GrokBot Notch.app` into `/Applications`:
 npm run install:app
 ```
 
+### Windows
+
+Windows has no hardware notch. This fork draws the same pouch at the top center of the primary monitor.
+
+Requirements: Windows 10/11, Node.js 22.5+, and Desktop Grok Bot installed and signed in.
+
+```powershell
+git clone https://github.com/manuelcastrobarinas/grokbot-notch.git
+cd grokbot-notch
+npm install
+npm start
+```
+
+| Action | Shortcut |
+| :--- | :--- |
+| Expand / collapse | **Ctrl+Alt+Space** |
+| Start / stop voice | **Ctrl+Shift+G** or click the bot |
+| Previous / next bot | **Left / Right** while the pouch is open |
+| Quit | Tray icon |
+
+Voice uses the microphone through the overlay (24 kHz PCM). Allow the microphone for Electron if Windows asks. Quit from the tray icon so the local bridge on `127.0.0.1:4789` stops with it.
+
 ---
 
 ## ✨ Features & Design

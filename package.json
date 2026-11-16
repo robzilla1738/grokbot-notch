@@ -1,18 +1,19 @@
 {
   "name": "grokbot-notch",
   "version": "1.0.0",
-  "description": "Native macOS Notch companion for Desktop Grok Bot with flat Motion Lab characters and live xAI Realtime Voice Mode",
+  "description": "Notch companion for Desktop Grok Bot on macOS, and a top-of-screen overlay on Windows, with flat Motion Lab characters and live xAI Realtime Voice Mode",
   "license": "MIT",
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "https://github.com/robzilla1738/grokbot-notch.git"
+    "url": "https://github.com/manuelcastrobarinas/grokbot-notch.git"
   },
   "keywords": [
     "grok",
     "grok-bot",
     "xai",
     "macos",
+    "windows",
     "notch",
     "voice-mode",
     "realtime"
@@ -21,10 +22,15 @@
     "node": ">=22.5.0"
   },
   "scripts": {
-    "setup": "./scripts/setup.sh",
-    "install:app": "./scripts/setup.sh --install",
-    "start": "./scripts/launch.sh",
+    "setup": "node scripts/setup.mjs",
+    "setup:mac": "bash scripts/setup.sh",
+    "install:app": "bash scripts/setup.sh --install",
+    "start": "node scripts/start.mjs",
+    "start:mac": "bash scripts/launch.sh",
     "server": "node server.mjs",
-    "build:mac": "./scripts/build-mac-app.sh"
+    "build:mac": "bash scripts/build-mac-app.sh"
+  },
+  "dependencies": {
+    "electron": "^33.4.11"
   }
 }
