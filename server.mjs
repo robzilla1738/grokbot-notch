@@ -76,8 +76,31 @@ const SPEEDS = [
   { value: 0.75, label: "0.75×" },
   { value: 1, label: "1.0×" },
   { value: 1.25, label: "1.25×" },
-  { value: 1.5, label: "1.5×" },
-  { value: 2, label: "2.0×" }
+  { value: 1.5, label: "1.5×" }
+];
+
+const LANGUAGES = [
+  { id: "auto", label: "Auto" },
+  { id: "en", label: "English" },
+  { id: "es-MX", label: "Spanish (Mexico)" },
+  { id: "es-ES", label: "Spanish (Spain)" },
+  { id: "pt-BR", label: "Portuguese (Brazil)" },
+  { id: "pt-PT", label: "Portuguese (Portugal)" },
+  { id: "fr", label: "French" },
+  { id: "de", label: "German" },
+  { id: "it", label: "Italian" },
+  { id: "ja", label: "Japanese" },
+  { id: "ko", label: "Korean" },
+  { id: "zh", label: "Chinese (Simplified)" },
+  { id: "hi", label: "Hindi" },
+  { id: "ar-EG", label: "Arabic (Egypt)" },
+  { id: "ar-SA", label: "Arabic (Saudi Arabia)" },
+  { id: "ar-AE", label: "Arabic (United Arab Emirates)" },
+  { id: "bn", label: "Bengali" },
+  { id: "id", label: "Indonesian" },
+  { id: "ru", label: "Russian" },
+  { id: "tr", label: "Turkish" },
+  { id: "vi", label: "Vietnamese" }
 ];
 
 const DEFAULT_COLORS = ["brown", "red", "orange", "yellow", "green", "cyan", "blue", "violet", "magenta", "gray"];
@@ -802,7 +825,8 @@ async function getBootstrapData() {
     sections: activeSections,
     bots,
     voices: VOICES,
-    speeds: SPEEDS
+    speeds: SPEEDS,
+    languages: LANGUAGES
   };
 }
 

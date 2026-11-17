@@ -122,11 +122,18 @@ const state = {
     callId: null,
     isMuted: false,
     energy: 0
-  }
+  },
+  settingsOpen: false,
+  compact: false,
+  voices: [],
+  speeds: [],
+  languages: [],
+  switchConfirmDelta: null
 };
 
 const dom = {
   pouch: document.getElementById("notch-pouch"),
+  dragHandle: document.getElementById("drag-handle"),
   collapsedBar: document.getElementById("collapsed-bar"),
   collapsedMark: document.getElementById("collapsed-mark"),
   collapsedName: document.getElementById("collapsed-name"),
@@ -134,13 +141,24 @@ const dom = {
   botMarkMount: document.getElementById("bot-mark-mount"),
   mainStarBadge: document.getElementById("main-star-badge"),
   botNameLabel: document.getElementById("bot-name-label"),
+  voiceSummary: document.getElementById("voice-summary"),
   botStatusCaption: document.getElementById("bot-status-caption"),
+  voiceSettingsBtn: document.getElementById("voice-settings-btn"),
+  sizeBtn: document.getElementById("size-btn"),
+  voiceSettings: document.getElementById("voice-settings"),
+  voiceIdSelect: document.getElementById("voice-id-select"),
+  voiceSpeedSelect: document.getElementById("voice-speed-select"),
+  voiceLanguageSelect: document.getElementById("voice-language-select"),
   prevBotBtn: document.getElementById("prev-bot-btn"),
   nextBotBtn: document.getElementById("next-bot-btn"),
   audioWavesBtn: document.getElementById("audio-waves-btn"),
   audioWavesBars: document.getElementById("audio-waves-bars"),
   typeForm: document.getElementById("type-form"),
-  typeInput: document.getElementById("type-input")
+  typeInput: document.getElementById("type-input"),
+  switchConfirm: document.getElementById("switch-confirm"),
+  switchConfirmText: document.getElementById("switch-confirm-text"),
+  switchConfirmYes: document.getElementById("switch-confirm-yes"),
+  switchConfirmNo: document.getElementById("switch-confirm-no")
 };
 
 if (window.grokbotNotchHost) {
@@ -149,7 +167,101 @@ if (window.grokbotNotchHost) {
 }
 
 function getSelectedBot() {
-  return state.bots.find((b) => b.id === state.selectedBotId) || state.bots[0] || null;
+  return state.bots.find((bot) => bot.id === state.selectedBotId) || state.bots[0] || null;
+}
+
+function clampVoiceSpeed(speed) {
+  const numericSpeed = Number(speed);
+  if (!Number.isFinite(numericSpeed)) return 1;
+  return Math.min(1.5, Math.max(0.7, numericSpeed));
+}
+
+function voiceSummaryText(bot) {
+  if (!bot) return "";
+  const voice = state.voices.find((item) => item.id === bot.voiceId);
+  const speed = state.speeds.find((item) => Number(item.value) === Number(bot.voiceSpeed));
+  const language = state.languages.find((item) => item.id === bot.voiceLanguage);
+  const voiceLabel = voice?.label || bot.voiceId || "Liora";
+  const speedLabel = speed?.label || `${Number(bot.voiceSpeed) || 1}×`;
+  const languageLabel = !bot.voiceLanguage || bot.voiceLanguage === "auto"
+    ? "Auto"
+    : (language?.label || bot.voiceLanguage);
+  return `${voiceLabel} · ${speedLabel} · ${languageLabel}`;
+}
+
+function realtimeVoiceConfig(bot) {
+  const transcription = { model: "grok-transcribe" };
+  if (bot.voiceLanguage && bot.voiceLanguage !== "auto") {
+    transcription.language_hint = bot.voiceLanguage;
+  }
+  return {
+    ...(bot.voiceId ? { voice: bot.voiceId } : {}),
+    audio: {
+      input: {
+        format: { type: "audio/pcm", rate: 24000 },
+        transcription
+      },
+      output: {
+        format: { type: "audio/pcm", rate: 24000 },
+        speed: clampVoiceSpeed(bot.voiceSpeed)
+      }
+    }
+  };
+}
+
+function pushLiveVoice(bot) {
+  const socket = activeSession?.ws;
+  if (!bot || !socket || socket.readyState !== WebSocket.OPEN) return;
+  socket.send(JSON.stringify({
+    type: "session.update",
+    session: realtimeVoiceConfig(bot)
+  }));
+}
+
+function fillVoiceSelect(select, options, currentValue, valueKey, labelKey) {
+  const known = options.some((option) => String(option[valueKey]) === String(currentValue));
+  const entries = known || currentValue == null
+    ? options
+    : [{ [valueKey]: currentValue, [labelKey]: String(currentValue) }, ...options];
+  select.replaceChildren();
+  for (const option of entries) {
+    const element = document.createElement("option");
+    element.value = String(option[valueKey]);
+    element.textContent = option[labelKey];
+    if (String(option[valueKey]) === String(currentValue)) element.selected = true;
+    select.append(element);
+  }
+}
+
+function renderVoiceSettings(bot) {
+  if (!bot) return;
+  fillVoiceSelect(dom.voiceIdSelect, state.voices, bot.voiceId, "id", "label");
+  fillVoiceSelect(dom.voiceSpeedSelect, state.speeds, bot.voiceSpeed, "value", "label");
+  fillVoiceSelect(dom.voiceLanguageSelect, state.languages, bot.voiceLanguage || "auto", "id", "label");
+}
+
+function setWidgetCompact(compact) {
+  state.compact = Boolean(compact);
+  dom.pouch.dataset.size = state.compact ? "compact" : "full";
+  const label = state.compact ? "Agrandar" : "Achicar";
+  dom.sizeBtn.title = label;
+  dom.sizeBtn.setAttribute("aria-label", label);
+  try {
+    localStorage.setItem("grokbot-notch-size", state.compact ? "compact" : "full");
+  } catch {
+    // The choice still applies for this session.
+  }
+  reportHitRectToNative();
+}
+
+function setSettingsOpen(open) {
+  state.settingsOpen = Boolean(open);
+  dom.pouch.dataset.settings = String(state.settingsOpen);
+  if (state.settingsOpen) {
+    setTypingMode(false);
+    renderVoiceSettings(getSelectedBot());
+  }
+  reportHitRectToNative();
 }
 
 // Exact flat color palette matching Grok Bot dark mode (with softer, less harsh blue)
@@ -294,6 +406,7 @@ window.addEventListener(
 // ============================================================================
 function reportHitRectToNative() {
   const rect = dom.pouch.getBoundingClientRect();
+  const gripRect = dom.dragHandle.getBoundingClientRect();
   const bot = getSelectedBot();
   postNativeMessage({
     type: "hitRect",
@@ -301,8 +414,12 @@ function reportHitRectToNative() {
     y: Math.round(rect.top),
     width: Math.round(rect.width),
     height: Math.round(rect.height),
+    dragX: Math.round(gripRect.left),
+    dragY: Math.round(gripRect.top),
+    dragWidth: Math.round(gripRect.width),
+    dragHeight: Math.round(gripRect.height),
     isOpen: state.expanded,
-    isTyping: state.typing,
+    isTyping: state.typing || state.settingsOpen,
     callPhase: state.call.phase,
     botName: bot?.name || "Grok Bot"
   });
@@ -310,17 +427,20 @@ function reportHitRectToNative() {
 
 const resizeObserver = new ResizeObserver(() => reportHitRectToNative());
 resizeObserver.observe(dom.pouch);
+if (dom.dragHandle) resizeObserver.observe(dom.dragHandle);
 
 function setExpanded(expanded) {
   const next = Boolean(expanded);
   if (state.expanded === next) return;
   state.expanded = next;
   dom.pouch.dataset.expanded = String(next);
+  if (!next) setSettingsOpen(false);
   if (next) {
     playUiSound("open");
     refreshBootstrap();
   } else {
     setTypingMode(false);
+    hideSwitchConfirm();
   }
   reportHitRectToNative();
   let steps = 0;
@@ -559,15 +679,66 @@ class VoiceAudioPipeline {
 // ============================================================================
 let activeSession = null;
 let transcriptPollInterval = null;
+let voiceCallGeneration = 0;
+const openVoiceSessions = new Set();
+
+function closeVoiceSession(session) {
+  if (!session || session.closed) return;
+  session.closed = true;
+  openVoiceSessions.delete(session);
+  if (session.greetingTimer) {
+    clearTimeout(session.greetingTimer);
+    session.greetingTimer = null;
+  }
+  try {
+    session.audioPipeline?.stop();
+  } catch {
+    // The pipeline may already be stopped.
+  }
+  const socket = session.ws;
+  try {
+    if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+      socket.close(1000, "hang_up");
+    }
+  } catch {
+    // Closing a socket that already died is fine.
+  }
+}
+
+function closeEveryVoiceSession() {
+  for (const session of [...openVoiceSessions]) {
+    closeVoiceSession(session);
+  }
+  activeSession = null;
+}
+
+function voiceStartWasReplaced(generation) {
+  return generation !== voiceCallGeneration;
+}
+
+function stopPrimedMicrophone(primedMicStream) {
+  if (!primedMicStream) return;
+  for (const track of primedMicStream.getTracks()) track.stop();
+}
 
 async function startVoiceCall() {
-  if (activeSession) {
-    await stopVoiceCall();
+  const generation = ++voiceCallGeneration;
+  closeEveryVoiceSession();
+  if (transcriptPollInterval) {
+    clearInterval(transcriptPollInterval);
+    transcriptPollInterval = null;
   }
-  const bot = getSelectedBot();
-  if (!bot) return;
-
   setExpanded(true);
+  await refreshBootstrap();
+  if (voiceStartWasReplaced(generation)) return;
+  const bot = getSelectedBot();
+  if (!bot) {
+    state.call.phase = "idle";
+    state.call.activity = "quiet";
+    state.statusCaption = "";
+    renderPouch();
+    return;
+  }
   state.call = {
     phase: "connecting",
     activity: "quiet",
@@ -596,6 +767,11 @@ async function startVoiceCall() {
       })
     }).then((r) => r.json());
 
+    if (voiceStartWasReplaced(generation)) {
+      stopPrimedMicrophone(primedMicStream);
+      return;
+    }
+
     if (!startRes.ok) {
       throw new Error(startRes.error || "Could not start voice call");
     }
@@ -612,13 +788,12 @@ async function startVoiceCall() {
     const assistantDeltas = new Map();
     const seenVoiceUpdateIds = new Set();
     let invitedModel = false;
-    let greetingTimer = null;
     let callerIsSpeaking = false;
     let theyTalkedOverThisResponse = false;
 
     const audioPipeline = new VoiceAudioPipeline({
       onPcm16Base64: (base64) => {
-        if (state.call.isMuted || ws.readyState !== WebSocket.OPEN) return;
+        if (session.closed || voiceStartWasReplaced(generation) || state.call.isMuted || ws.readyState !== WebSocket.OPEN) return;
         ws.send(JSON.stringify({ type: "input_audio_buffer.append", audio: base64 }));
       },
       onSpeechEnded: () => {
@@ -633,12 +808,12 @@ async function startVoiceCall() {
       }
     });
 
-    await audioPipeline.start(primedMicStream);
-    primedMicStream = null;
-
-    activeSession = {
+    const session = {
       ws,
       audioPipeline,
+      greetingTimer: null,
+      closed: false,
+      generation,
       sendWrittenTurn(text) {
         if (ws.readyState !== WebSocket.OPEN) return false;
         const eventId = `written-turn-${crypto.randomUUID()}`;
@@ -654,36 +829,37 @@ async function startVoiceCall() {
         return true;
       }
     };
+    openVoiceSessions.add(session);
 
     ws.addEventListener("open", () => {
+      if (session.closed || voiceStartWasReplaced(generation)) return;
       if (invitedModel || ws.readyState !== WebSocket.OPEN) return;
       invitedModel = true;
       ws.send(JSON.stringify({
         type: "session.update",
         session: {
-          ...(bot.voiceId ? { voice: bot.voiceId } : {}),
+          ...realtimeVoiceConfig(bot),
           resumption: { enabled: true },
           instructions: plan.instructions,
           turn_detection: { type: "server_vad" },
-          audio: {
-            input: { format: { type: "audio/pcm", rate: 24000 }, transcription: { model: "grok-transcribe" } },
-            output: { format: { type: "audio/pcm", rate: 24000 }, speed: bot.voiceSpeed || 1 }
-          },
           tools: plan.tools
         }
       }));
 
-      greetingTimer = setTimeout(() => {
-        if (!callerIsSpeaking && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({
-            type: "response.create",
-            response: { instructions: plan.greeting.direction }
-          }));
-        }
+      session.greetingTimer = setTimeout(() => {
+        if (session.closed || callerIsSpeaking || ws.readyState !== WebSocket.OPEN) return;
+        ws.send(JSON.stringify({
+          type: "response.create",
+          response: { instructions: plan.greeting.direction }
+        }));
       }, 350);
     });
 
     ws.addEventListener("message", async (ev) => {
+      if (session.closed || voiceStartWasReplaced(generation)) {
+        closeVoiceSession(session);
+        return;
+      }
       if (typeof ev.data !== "string") return;
       let msg;
       try {
@@ -707,9 +883,9 @@ async function startVoiceCall() {
         case "input_audio_buffer.speech_started": {
           callerIsSpeaking = true;
           theyTalkedOverThisResponse = true;
-          if (greetingTimer) {
-            clearTimeout(greetingTimer);
-            greetingTimer = null;
+          if (session.greetingTimer) {
+            clearTimeout(session.greetingTimer);
+            session.greetingTimer = null;
           }
           const cuts = audioPipeline.dropScheduledSpeechForBargeIn();
           for (const cut of cuts) {
@@ -781,7 +957,8 @@ async function startVoiceCall() {
             plan,
             toolCallId,
             toolName,
-            parsedArgs
+            parsedArgs,
+            generation
           });
           break;
         }
@@ -798,14 +975,26 @@ async function startVoiceCall() {
     });
 
     ws.addEventListener("close", () => {
-      if (activeSession?.ws === ws) {
+      if (session.closed) return;
+      if (activeSession === session) {
         stopVoiceCall({ silentChime: false });
+        return;
       }
+      closeVoiceSession(session);
     });
+
+    activeSession = session;
+    await audioPipeline.start(primedMicStream);
+    primedMicStream = null;
+    if (session.closed || voiceStartWasReplaced(generation)) {
+      if (!session.closed) closeVoiceSession(session);
+      if (activeSession === session) activeSession = null;
+      return;
+    }
 
     if (transcriptPollInterval) clearInterval(transcriptPollInterval);
     transcriptPollInterval = setInterval(async () => {
-      if (!activeSession || state.call.phase !== "live") return;
+      if (!activeSession || activeSession.closed || activeSession.generation !== voiceCallGeneration || state.call.phase !== "live") return;
       try {
         const res = await apiFetch(`/api/bot/${encodeURIComponent(bot.id)}/transcript?callId=${encodeURIComponent(callId)}`).then((r) => r.json());
         if (Array.isArray(res?.voiceUpdates)) {
@@ -829,16 +1018,16 @@ async function startVoiceCall() {
       } catch {}
     }, 2800);
   } catch (err) {
-    if (primedMicStream) {
-      for (const track of primedMicStream.getTracks()) track.stop();
-    }
+    stopPrimedMicrophone(primedMicStream);
+    if (voiceStartWasReplaced(generation)) return;
     await stopVoiceCall({ silentChime: true });
     state.statusCaption = err.message;
     renderPouch();
   }
 }
 
-async function handleVoiceToolCall({ ws, audioPipeline, bot, callId, plan, toolCallId, toolName, parsedArgs }) {
+async function handleVoiceToolCall({ ws, audioPipeline, bot, callId, plan, toolCallId, toolName, parsedArgs, generation }) {
+  if (voiceStartWasReplaced(generation)) return;
   state.call.activity = "working";
   state.statusCaption = "Working…";
   renderPouch();
@@ -850,6 +1039,7 @@ async function handleVoiceToolCall({ ws, audioPipeline, bot, callId, plan, toolC
       body: JSON.stringify({ agentId: bot.id, callId, name: toolName, input: parsedArgs })
     }).catch(() => {});
     await audioPipeline.whenScheduledSpeechEnds();
+    if (voiceStartWasReplaced(generation)) return;
     await stopVoiceCall();
     return;
   }
@@ -883,6 +1073,7 @@ async function handleVoiceToolCall({ ws, audioPipeline, bot, callId, plan, toolC
       })
     }).then((r) => r.json());
 
+    if (voiceStartWasReplaced(generation)) return;
     if (toolName !== "send_task" && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({
         type: "conversation.item.create",
@@ -895,6 +1086,7 @@ async function handleVoiceToolCall({ ws, audioPipeline, bot, callId, plan, toolC
       ws.send(JSON.stringify({ type: "response.create" }));
     }
   } catch (err) {
+    if (voiceStartWasReplaced(generation)) return;
     if (toolName !== "send_task" && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({
         type: "conversation.item.create",
@@ -909,22 +1101,14 @@ async function handleVoiceToolCall({ ws, audioPipeline, bot, callId, plan, toolC
 }
 
 async function stopVoiceCall({ silentChime = false } = {}) {
+  voiceCallGeneration += 1;
   const wasLive = state.call.phase === "live";
   if (transcriptPollInterval) {
     clearInterval(transcriptPollInterval);
     transcriptPollInterval = null;
   }
 
-  if (activeSession) {
-    const sess = activeSession;
-    activeSession = null;
-    try { sess.audioPipeline.stop(); } catch {}
-    try {
-      if (sess.ws.readyState === WebSocket.OPEN || sess.ws.readyState === WebSocket.CONNECTING) {
-        sess.ws.close(1000, "hang_up");
-      }
-    } catch {}
-  }
+  closeEveryVoiceSession();
 
   if (wasLive && !silentChime) {
     playCallChime("hangup");
@@ -934,6 +1118,7 @@ async function stopVoiceCall({ silentChime = false } = {}) {
   state.call.activity = "quiet";
   state.call.energy = 0;
   state.statusCaption = "";
+  hideSwitchConfirm();
   renderPouch();
   reportHitRectToNative();
 }
@@ -948,7 +1133,9 @@ function renderPouch() {
   syncCharacterToBot(bot);
 
   dom.pouch.dataset.call = state.call.phase;
+  dom.pouch.dataset.settings = String(state.settingsOpen);
   dom.botNameLabel.textContent = bot.name;
+  dom.voiceSummary.textContent = voiceSummaryText(bot);
   dom.typeInput.placeholder = `Message ${bot.name}…`;
 
   // Show orange star badge on the primary/first pinned bot (or Chief)
@@ -984,22 +1171,120 @@ async function selectBot(botId) {
   }
 }
 
+function peekBot(delta) {
+  if (state.bots.length < 2) return null;
+  const currentIndex = state.bots.findIndex((bot) => bot.id === state.selectedBotId);
+  const nextIndex = (currentIndex + delta + state.bots.length) % state.bots.length;
+  return state.bots[nextIndex] || null;
+}
+
+function hideSwitchConfirm() {
+  state.switchConfirmDelta = null;
+  if (!dom.switchConfirm) return;
+  dom.switchConfirm.hidden = true;
+}
+
+function showSwitchConfirm(delta) {
+  const nextBot = peekBot(delta);
+  if (!nextBot) return;
+  state.switchConfirmDelta = delta;
+  dom.switchConfirmText.textContent = `¿Colgar y pasar a ${nextBot.name}?`;
+  dom.switchConfirm.hidden = false;
+  reportHitRectToNative();
+}
+
+async function confirmSwitchBot() {
+  const delta = state.switchConfirmDelta;
+  const nextBot = delta == null ? null : peekBot(delta);
+  hideSwitchConfirm();
+  if (!nextBot) return;
+  if (state.call.phase !== "idle") await stopVoiceCall();
+  await selectBot(nextBot.id);
+}
+
+function requestBotCycle(delta) {
+  if (state.call.phase !== "idle") {
+    showSwitchConfirm(delta);
+    return;
+  }
+  cycleBot(delta);
+}
+
 function cycleBot(delta) {
-  if (state.bots.length === 0) return;
-  const idx = state.bots.findIndex((b) => b.id === state.selectedBotId);
-  const nextIdx = (idx + delta + state.bots.length) % state.bots.length;
+  const nextBot = peekBot(delta);
+  if (!nextBot) return;
   playUiSound("tick");
-  selectBot(state.bots[nextIdx].id);
+  selectBot(nextBot.id);
 }
 
 // ============================================================================
 // EVENTS & SHORTCUTS
 // ============================================================================
+function installWindowDrag() {
+  const notchHost = window.grokbotNotchHost;
+  if (!notchHost || typeof notchHost.dragHold !== "function" || !dom.dragHandle) return;
+
+  let dragPointerId = null;
+  let dragStartX = 0;
+  let dragStartY = 0;
+  let windowDragStarted = false;
+  let suppressClickAfterDrag = false;
+
+  dom.dragHandle.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    event.stopPropagation();
+    dragPointerId = event.pointerId;
+    dragStartX = event.screenX;
+    dragStartY = event.screenY;
+    windowDragStarted = false;
+    dom.dragHandle.setPointerCapture(event.pointerId);
+    notchHost.dragHold();
+  });
+
+  dom.dragHandle.addEventListener("pointermove", (event) => {
+    if (dragPointerId !== event.pointerId) return;
+    const travelX = event.screenX - dragStartX;
+    const travelY = event.screenY - dragStartY;
+    if (windowDragStarted) return;
+    if (Math.abs(travelX) + Math.abs(travelY) < 5) return;
+    windowDragStarted = true;
+    dom.pouch.classList.add("is-dragging");
+  });
+
+  function endWindowDrag(event) {
+    if (dragPointerId === null || event.pointerId !== dragPointerId) return;
+    const didDrag = windowDragStarted;
+    dragPointerId = null;
+    windowDragStarted = false;
+    dom.pouch.classList.remove("is-dragging");
+    notchHost.dragEnd();
+    if (!didDrag) return;
+    suppressClickAfterDrag = true;
+  }
+
+  dom.dragHandle.addEventListener("pointerup", endWindowDrag);
+  dom.dragHandle.addEventListener("pointercancel", endWindowDrag);
+
+  dom.dragHandle.addEventListener(
+    "click",
+    (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!suppressClickAfterDrag) return;
+      suppressClickAfterDrag = false;
+    },
+    true
+  );
+}
+
+installWindowDrag();
+
 dom.collapsedBar.addEventListener("click", () => {
   setExpanded(true);
 });
 
 dom.botCharacterBtn.addEventListener("click", async () => {
+  if (state.settingsOpen) return;
   if (state.call.phase === "idle") {
     await startVoiceCall();
   } else {
@@ -1007,12 +1292,55 @@ dom.botCharacterBtn.addEventListener("click", async () => {
   }
 });
 
+dom.voiceSettings.addEventListener("submit", (event) => {
+  event.preventDefault();
+});
+
+dom.sizeBtn.addEventListener("click", (event) => {
+  event.stopPropagation();
+  setWidgetCompact(!state.compact);
+});
+
+dom.voiceSettingsBtn.addEventListener("click", (event) => {
+  event.stopPropagation();
+  setSettingsOpen(!state.settingsOpen);
+});
+
+async function saveVoiceSetting(patch) {
+  const bot = getSelectedBot();
+  if (!bot) return;
+  Object.assign(bot, patch);
+  dom.voiceSummary.textContent = voiceSummaryText(bot);
+  pushLiveVoice(bot);
+  try {
+    await apiFetch("/api/voice/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agentId: bot.id, ...patch })
+    });
+  } catch {
+    // The in-call session already uses the new setting. The next bootstrap reconciles storage.
+  }
+}
+
+dom.voiceIdSelect.addEventListener("change", () => {
+  saveVoiceSetting({ voiceId: dom.voiceIdSelect.value });
+});
+
+dom.voiceSpeedSelect.addEventListener("change", () => {
+  saveVoiceSetting({ voiceSpeed: Number(dom.voiceSpeedSelect.value) });
+});
+
+dom.voiceLanguageSelect.addEventListener("change", () => {
+  saveVoiceSetting({ voiceLanguage: dom.voiceLanguageSelect.value });
+});
+
 dom.prevBotBtn.addEventListener("pointerdown", (e) => {
   if (state.typing) e.preventDefault();
 });
 
 dom.prevBotBtn.addEventListener("click", () => {
-  cycleBot(-1);
+  requestBotCycle(-1);
 });
 
 dom.nextBotBtn.addEventListener("pointerdown", (e) => {
@@ -1020,7 +1348,16 @@ dom.nextBotBtn.addEventListener("pointerdown", (e) => {
 });
 
 dom.nextBotBtn.addEventListener("click", () => {
-  cycleBot(1);
+  requestBotCycle(1);
+});
+
+dom.switchConfirmNo.addEventListener("click", () => {
+  hideSwitchConfirm();
+  reportHitRectToNative();
+});
+
+dom.switchConfirmYes.addEventListener("click", () => {
+  confirmSwitchBot();
 });
 
 dom.audioWavesBtn.addEventListener("click", () => {
@@ -1126,9 +1463,18 @@ window.addEventListener("keydown", (e) => {
   if (!state.expanded) return;
 
   if (e.key === "Escape") {
+    if (state.settingsOpen) {
+      setSettingsOpen(false);
+      return;
+    }
     if (state.typing) {
       dom.typeInput.value = "";
       setTypingMode(false);
+      return;
+    }
+    if (state.switchConfirmDelta != null) {
+      hideSwitchConfirm();
+      reportHitRectToNative();
       return;
     }
     if (state.call.phase !== "idle") {
@@ -1139,14 +1485,11 @@ window.addEventListener("keydown", (e) => {
     return;
   }
 
-  if (state.typing) return;
+  if (state.typing || state.settingsOpen) return;
 
-  if (e.key === "ArrowLeft") {
+  if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
     e.preventDefault();
-    cycleBot(-1);
-  } else if (e.key === "ArrowRight") {
-    e.preventDefault();
-    cycleBot(1);
+    requestBotCycle(e.key === "ArrowLeft" ? -1 : 1);
   } else if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
     e.preventDefault();
     setTypingMode(true, e.key);
@@ -1169,12 +1512,21 @@ window.__notchCommand = async (cmd) => {
       }
       break;
     case "nextBot":
-      cycleBot(1);
+      requestBotCycle(1);
       break;
     case "prevBot":
-      cycleBot(-1);
+      requestBotCycle(-1);
       break;
     case "escape":
+      if (state.switchConfirmDelta != null) {
+        hideSwitchConfirm();
+        reportHitRectToNative();
+        break;
+      }
+      if (state.settingsOpen) {
+        setSettingsOpen(false);
+        break;
+      }
       if (state.typing) {
         dom.typeInput.value = "";
         setTypingMode(false);
@@ -1220,19 +1572,32 @@ async function refreshBootstrap() {
     const newIds = data.bots.map((b) => b.id).join(",");
     const rosterChanged = oldIds !== newIds;
 
+    const selectedBefore = getSelectedBot();
+    const voiceBefore = selectedBefore
+      ? `${selectedBefore.id}|${selectedBefore.voiceId}|${selectedBefore.voiceSpeed}|${selectedBefore.voiceLanguage}`
+      : "";
+
     state.activeAccountScope = data.activeAccountScope || state.activeAccountScope;
     state.bots = data.bots;
+    if (Array.isArray(data.voices)) state.voices = data.voices;
+    if (Array.isArray(data.speeds)) state.speeds = data.speeds;
+    if (Array.isArray(data.languages)) state.languages = data.languages;
 
-    if (accountChanged || !state.selectedBotId || !state.bots.some((b) => b.id === state.selectedBotId)) {
+    if (accountChanged || !state.selectedBotId || !state.bots.some((bot) => bot.id === state.selectedBotId)) {
       state.selectedBotId = data.selectedBotId || state.bots[0]?.id || null;
       state.statusCaption = "";
     }
 
-    if (accountChanged || rosterChanged) {
+    const selectedAfter = getSelectedBot();
+    const voiceAfter = selectedAfter
+      ? `${selectedAfter.id}|${selectedAfter.voiceId}|${selectedAfter.voiceSpeed}|${selectedAfter.voiceLanguage}`
+      : "";
+
+    if (accountChanged || rosterChanged || (!state.settingsOpen && voiceBefore !== voiceAfter)) {
       renderPouch();
       postNativeMessage({
         type: "rosterLoaded",
-        bots: state.bots.map((b) => ({ id: b.id, name: b.name, section: b.section })),
+        bots: state.bots.map((bot) => ({ id: bot.id, name: bot.name, section: bot.section })),
         selectedBotId: state.selectedBotId
       });
     }
@@ -1240,6 +1605,12 @@ async function refreshBootstrap() {
 }
 
 async function init() {
+  try {
+    state.compact = localStorage.getItem("grokbot-notch-size") === "compact";
+  } catch {
+    state.compact = false;
+  }
+  setWidgetCompact(state.compact);
   requestAnimationFrame(tickAnimation);
   await refreshBootstrap();
   renderPouch();

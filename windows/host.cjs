@@ -16,7 +16,8 @@ let cursorTimer = null;
 let ignoringMouse = true;
 
 const overlayState = {
-  hitRect: { x: 94, y: 0, width: 212, height: 56 },
+  hitRect: { x: 170, y: 0, width: 60, height: 60 },
+  dragRect: { x: 186, y: 42, width: 26, height: 14 },
   isOpen: false,
   isTyping: false,
   callPhase: "idle",
@@ -105,12 +106,317 @@ function sendCommand(command) {
     .catch(() => {});
 }
 
+function positionFilePath() {
+  const roaming = process.env.APPDATA || path.join(app.getPath("home"), "AppData", "Roaming");
+  return path.join(roaming, "GrokBot Notch", "window-position.json");
+}
+
+function readSavedPosition() {
+  try {
+    const saved = JSON.parse(fs.readFileSync(positionFilePath(), "utf8"));
+    if (!Number.isFinite(saved.x) || !Number.isFinite(saved.y)) return null;
+    return { x: Math.round(saved.x), y: Math.round(saved.y) };
+  } catch {
+    return null;
+  }
+}
+
+function secondaryOrPrimaryDisplay() {
+  const primary = screen.getPrimaryDisplay();
+  return screen.getAllDisplays().find((display) => display.id !== primary.id) || primary;
+}
+
+function positionStaysOnScreen(originX, originY) {
+  const anchorX = originX + 24;
+  const anchorY = originY + 24;
+  return screen.getAllDisplays().some((display) => {
+    const area = display.bounds;
+    return anchorX >= area.x && anchorX <= area.x + area.width && anchorY >= area.y && anchorY <= area.y + area.height;
+  });
+}
+
+function defaultWindowOrigin() {
+  const area = secondaryOrPrimaryDisplay().workArea;
+  return {
+    x: Math.round(area.x + (area.width - PANEL_WIDTH) / 2),
+    y: area.y + 16
+  };
+}
+
 function placeWindow() {
   if (!notchWindow || notchWindow.isDestroyed()) return;
-  const display = screen.getPrimaryDisplay();
-  const originX = Math.round(display.bounds.x + (display.bounds.width - PANEL_WIDTH) / 2);
-  const originY = display.bounds.y;
-  notchWindow.setBounds({ x: originX, y: originY, width: PANEL_WIDTH, height: PANEL_HEIGHT });
+  const saved = readSavedPosition();
+  const origin = saved && positionStaysOnScreen(saved.x, saved.y) ? saved : defaultWindowOrigin();
+  notchWindow.setBounds({ x: origin.x, y: origin.y, width: PANEL_WIDTH, height: PANEL_HEIGHT });
+}
+
+let draggingWindow = false;
+let dragTimer = null;
+let dragOrigin = null;
+let sawMouseButtonDown = false;
+let mouseButtonState = "unknown";
+let mouseWatcher = null;
+let pointerSample = null;
+
+function nativeWindowHandleString() {
+  const handleBuffer = notchWindow.getNativeWindowHandle();
+  const handleValue =
+    handleBuffer.length >= 8 ? handleBuffer.readBigUInt64LE(0) : BigInt(handleBuffer.readUInt32LE(0));
+  return handleValue.toString();
+}
+
+function pointInsideRect(pointX, pointY, rect, pad) {
+  return (
+    pointX >= rect.x - pad &&
+    pointX <= rect.x + rect.width + pad &&
+    pointY >= rect.y - pad &&
+    pointY <= rect.y + rect.height + pad
+  );
+}
+
+function physicalRectForLocal(localRect) {
+  if (!pointerSample || pointerSample.windowWidth <= 0 || pointerSample.windowHeight <= 0) return null;
+  if (!notchWindow || notchWindow.isDestroyed()) return null;
+  const dipBounds = notchWindow.getBounds();
+  if (dipBounds.width <= 0 || dipBounds.height <= 0) return null;
+  const scaleX = pointerSample.windowWidth / dipBounds.width;
+  const scaleY = pointerSample.windowHeight / dipBounds.height;
+  return {
+    x: pointerSample.windowLeft + localRect.x * scaleX,
+    y: pointerSample.windowTop + localRect.y * scaleY,
+    width: Math.max(1, localRect.width * scaleX),
+    height: Math.max(1, localRect.height * scaleY)
+  };
+}
+
+function cursorHitsLocalRect(localRect, pad) {
+  if (!localRect || localRect.width <= 0 || localRect.height <= 0) return false;
+  const physicalRect = physicalRectForLocal(localRect);
+  if (physicalRect && pointerSample) {
+    const scale = physicalRect.width / localRect.width;
+    return pointInsideRect(pointerSample.cursorX, pointerSample.cursorY, physicalRect, pad * scale);
+  }
+  if (!notchWindow || notchWindow.isDestroyed()) return false;
+  const cursor = screen.getCursorScreenPoint();
+  const bounds = notchWindow.getBounds();
+  return pointInsideRect(cursor.x, cursor.y, {
+    x: bounds.x + localRect.x,
+    y: bounds.y + localRect.y,
+    width: localRect.width,
+    height: localRect.height
+  }, pad);
+}
+
+function dipPointFromPhysical(physicalX, physicalY) {
+  if (typeof screen.screenToDipPoint === "function") {
+    try {
+      return screen.screenToDipPoint({ x: Math.round(physicalX), y: Math.round(physicalY) });
+    } catch {
+      // Fall through to the display scale when a monitor is mid-change.
+    }
+  }
+  const cursor = screen.getCursorScreenPoint();
+  const display = screen.getDisplayNearestPoint(cursor);
+  const scale = display.scaleFactor || 1;
+  return { x: physicalX / scale, y: physicalY / scale };
+}
+
+function clampWindowOrigin(originX, originY, width, height) {
+  const windowWidth = width || (notchWindow && !notchWindow.isDestroyed() ? notchWindow.getBounds().width : PANEL_WIDTH);
+  const windowHeight = height || (notchWindow && !notchWindow.isDestroyed() ? notchWindow.getBounds().height : PANEL_HEIGHT);
+  const centerX = originX + windowWidth / 2;
+  const centerY = originY + Math.min(windowHeight / 2, 36);
+  const displays = screen.getAllDisplays();
+  const alreadyVisible = displays.some((display) => {
+    const area = display.bounds;
+    return (
+      centerX >= area.x + 12 &&
+      centerX <= area.x + area.width - 12 &&
+      centerY >= area.y + 8 &&
+      centerY <= area.y + area.height - 12
+    );
+  });
+  if (alreadyVisible) return { x: Math.round(originX), y: Math.round(originY) };
+
+  const display = screen.getDisplayNearestPoint({ x: Math.round(centerX), y: Math.round(centerY) });
+  const area = display.workArea;
+  if (windowWidth >= area.width - 16) {
+    return {
+      x: Math.round(area.x + 8),
+      y: Math.round(Math.min(Math.max(originY, area.y + 8), area.y + area.height - Math.min(windowHeight, area.height) - 8))
+    };
+  }
+  const clampedCenterX = Math.min(Math.max(centerX, area.x + windowWidth / 2), area.x + area.width - windowWidth / 2);
+  const clampedCenterY = Math.min(Math.max(centerY, area.y + 24), area.y + area.height - 24);
+  return {
+    x: Math.round(originX + (clampedCenterX - centerX)),
+    y: Math.round(originY + (clampedCenterY - centerY))
+  };
+}
+
+const WIDGET_MARGIN_X = 0;
+const WIDGET_MARGIN_BOTTOM = 0;
+
+function syncWindowToWidget() {
+  if (!notchWindow || notchWindow.isDestroyed() || draggingWindow || mouseButtonState === "down") return;
+  const hit = overlayState.hitRect;
+  if (!hit || hit.width < 8 || hit.height < 8) return;
+  const targetWidth = Math.round(hit.width + WIDGET_MARGIN_X * 2);
+  const targetHeight = Math.round(hit.height + WIDGET_MARGIN_BOTTOM);
+  const expectedX = Math.round((targetWidth - hit.width) / 2);
+  const bounds = notchWindow.getBounds();
+  const sizeMatches = Math.abs(bounds.width - targetWidth) <= 1 && Math.abs(bounds.height - targetHeight) <= 1;
+  const placeMatches = Math.abs(hit.x - expectedX) <= 2 && Math.abs(hit.y) <= 2;
+  if (sizeMatches && placeMatches) return;
+  if (sizeMatches) return;
+  const nextOrigin = clampWindowOrigin(bounds.x + hit.x - expectedX, bounds.y + hit.y, targetWidth, targetHeight);
+  notchWindow.setBounds({ x: nextOrigin.x, y: nextOrigin.y, width: targetWidth, height: targetHeight });
+}
+
+function ensureMouseButtonWatcher() {
+  if (mouseWatcher || !notchWindow || notchWindow.isDestroyed()) return;
+  const scriptPath = path.join(__dirname, "mouse-button.ps1");
+  mouseWatcher = spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath], {
+    windowsHide: true,
+    stdio: ["pipe", "pipe", "ignore"]
+  });
+  mouseWatcher.stdin.write(`${nativeWindowHandleString()}\n`);
+  let pendingOutput = "";
+  mouseWatcher.stdout.on("data", (chunk) => {
+    pendingOutput += chunk.toString();
+    const lines = pendingOutput.split(/\r?\n/);
+    pendingOutput = lines.pop() || "";
+    for (const sampleLine of lines) {
+      const parts = sampleLine.trim().split(/\s+/);
+      if (parts.length < 7) continue;
+      const buttonState = parts[0];
+      if (buttonState !== "down" && buttonState !== "up") continue;
+      const numbers = parts.slice(1, 7).map((part) => Number(part));
+      if (numbers.some((value) => !Number.isFinite(value))) continue;
+      mouseButtonState = buttonState;
+      pointerSample = {
+        cursorX: numbers[0],
+        cursorY: numbers[1],
+        windowLeft: numbers[2],
+        windowTop: numbers[3],
+        windowWidth: numbers[4] - numbers[2],
+        windowHeight: numbers[5] - numbers[3]
+      };
+    }
+  });
+  mouseWatcher.on("exit", () => {
+    mouseWatcher = null;
+    mouseButtonState = "unknown";
+    pointerSample = null;
+    if (draggingWindow) finishWindowDrag();
+  });
+}
+
+function applyDragPosition() {
+  if (!dragOrigin || !notchWindow || notchWindow.isDestroyed()) return;
+  const point = screen.getCursorScreenPoint();
+  const bounds = notchWindow.getBounds();
+
+  if (dragOrigin.seenCursorX != null) {
+    const cursorShiftX = point.x - dragOrigin.seenCursorX;
+    const cursorShiftY = point.y - dragOrigin.seenCursorY;
+    const windowShiftX = bounds.x - dragOrigin.landedX;
+    const windowShiftY = bounds.y - dragOrigin.landedY;
+    const cursorFollowedTheWindow =
+      Math.abs(cursorShiftX - windowShiftX) <= 1 && Math.abs(cursorShiftY - windowShiftY) <= 1;
+    if ((windowShiftX !== 0 || windowShiftY !== 0) && cursorFollowedTheWindow) {
+      dragOrigin.cursorX += cursorShiftX;
+      dragOrigin.cursorY += cursorShiftY;
+      dragOrigin.originX += windowShiftX;
+      dragOrigin.originY += windowShiftY;
+    }
+  }
+  dragOrigin.seenCursorX = point.x;
+  dragOrigin.seenCursorY = point.y;
+
+  const travelX = point.x - dragOrigin.cursorX;
+  const travelY = point.y - dragOrigin.cursorY;
+  if (!dragOrigin.moved && Math.abs(travelX) + Math.abs(travelY) < 4) {
+    dragOrigin.landedX = bounds.x;
+    dragOrigin.landedY = bounds.y;
+    return;
+  }
+
+  const nextOrigin = clampWindowOrigin(
+    dragOrigin.originX + travelX,
+    dragOrigin.originY + travelY,
+    bounds.width,
+    bounds.height
+  );
+  if (nextOrigin.x === bounds.x && nextOrigin.y === bounds.y) {
+    dragOrigin.landedX = bounds.x;
+    dragOrigin.landedY = bounds.y;
+    return;
+  }
+
+  dragOrigin.moved = true;
+  notchWindow.setPosition(nextOrigin.x, nextOrigin.y);
+  const landed = notchWindow.getBounds();
+  dragOrigin.originX += landed.x - nextOrigin.x;
+  dragOrigin.originY += landed.y - nextOrigin.y;
+  dragOrigin.landedX = landed.x;
+  dragOrigin.landedY = landed.y;
+}
+
+function finishWindowDrag() {
+  if (!dragOrigin && !dragTimer) return;
+  applyDragPosition();
+  const didMove = Boolean(dragOrigin && dragOrigin.moved);
+  dragOrigin = null;
+  draggingWindow = false;
+  sawMouseButtonDown = false;
+  if (dragTimer) {
+    clearInterval(dragTimer);
+    dragTimer = null;
+  }
+  if (didMove) saveWindowPosition();
+}
+
+function beginWindowDrag() {
+  if (!notchWindow || notchWindow.isDestroyed() || dragOrigin) return;
+  const cursor = screen.getCursorScreenPoint();
+  const bounds = notchWindow.getBounds();
+  dragOrigin = {
+    cursorX: cursor.x,
+    cursorY: cursor.y,
+    originX: bounds.x,
+    originY: bounds.y,
+    seenCursorX: cursor.x,
+    seenCursorY: cursor.y,
+    landedX: bounds.x,
+    landedY: bounds.y,
+    moved: false
+  };
+  draggingWindow = true;
+  sawMouseButtonDown = false;
+  ignoringMouse = false;
+  notchWindow.setIgnoreMouseEvents(false);
+  ensureMouseButtonWatcher();
+  dragTimer = setInterval(() => {
+    if (!dragOrigin || !notchWindow || notchWindow.isDestroyed()) return;
+    if (mouseButtonState === "down") sawMouseButtonDown = true;
+    if (sawMouseButtonDown && mouseButtonState === "up") {
+      finishWindowDrag();
+      return;
+    }
+    applyDragPosition();
+  }, 16);
+}
+
+function saveWindowPosition() {
+  if (!notchWindow || notchWindow.isDestroyed()) return;
+  const bounds = notchWindow.getBounds();
+  try {
+    fs.mkdirSync(path.dirname(positionFilePath()), { recursive: true });
+    fs.writeFileSync(positionFilePath(), JSON.stringify({ x: bounds.x, y: bounds.y }), "utf8");
+  } catch (error) {
+    console.error("[gb-notch] Could not save window position:", error.message);
+  }
 }
 
 function createTrayIcon() {
@@ -168,9 +474,9 @@ function rebuildTrayMenu() {
 }
 
 function syncExpandedShortcuts() {
-  const arrowsActive = overlayState.isOpen && !overlayState.isTyping;
+  const askBeforeSwitch = overlayState.isOpen && overlayState.callPhase !== "idle" && !overlayState.isTyping;
   for (const accelerator of ["Left", "Right"]) {
-    if (arrowsActive) {
+    if (askBeforeSwitch) {
       if (!globalShortcut.isRegistered(accelerator)) {
         const action = accelerator === "Left" ? "prevBot" : "nextBot";
         globalShortcut.register(accelerator, () => sendCommand({ action }));
@@ -180,7 +486,8 @@ function syncExpandedShortcuts() {
     }
   }
 
-  if (overlayState.isOpen) {
+  const hangupEscape = overlayState.isOpen && overlayState.callPhase !== "idle";
+  if (hangupEscape) {
     if (!globalShortcut.isRegistered("Escape")) {
       globalShortcut.register("Escape", () => sendCommand({ action: "escape" }));
     }
@@ -194,24 +501,22 @@ let lastGazeY = null;
 
 function updateMousePassthrough() {
   if (!notchWindow || notchWindow.isDestroyed()) return;
+  if (ignoringMouse) {
+    notchWindow.setIgnoreMouseEvents(false);
+    ignoringMouse = false;
+  }
+  if (!draggingWindow && mouseButtonState === "down" && cursorHitsLocalRect(overlayState.dragRect, 12)) {
+    beginWindowDrag();
+    return;
+  }
+  if (draggingWindow) return;
   const cursor = screen.getCursorScreenPoint();
   const bounds = notchWindow.getBounds();
-  const localX = cursor.x - bounds.x;
-  const localY = cursor.y - bounds.y;
-  const hit = overlayState.hitRect;
-  const pad = 10;
-  const inside =
-    localX >= hit.x - pad &&
-    localX <= hit.x + hit.width + pad &&
-    localY >= hit.y - pad &&
-    localY <= hit.y + hit.height + pad;
-
-  if (inside === ignoringMouse) {
-    ignoringMouse = !inside;
-    notchWindow.setIgnoreMouseEvents(!inside, { forward: true });
-  }
 
   if (overlayState.isOpen) {
+    const localX = cursor.x - bounds.x;
+    const localY = cursor.y - bounds.y;
+    if (localX < 0 || localY < 0 || localX > bounds.width || localY > bounds.height) return;
     const roundedX = Math.round(localX);
     const roundedY = Math.round(localY);
     if (roundedX !== lastGazeX || roundedY !== lastGazeY) {
@@ -267,9 +572,8 @@ function createNotchWindow() {
   notchWindow.once("ready-to-show", () => {
     placeWindow();
     notchWindow.show();
+    notchWindow.setIgnoreMouseEvents(false);
     ignoringMouse = false;
-    notchWindow.setIgnoreMouseEvents(true, { forward: true });
-    ignoringMouse = true;
   });
 
   notchWindow.loadURL(SERVER_URL);
@@ -278,14 +582,12 @@ function createNotchWindow() {
 function registerGlobalHotkeys() {
   const toggleOk = globalShortcut.register("Control+Alt+Space", () => {
     if (!notchWindow || notchWindow.isDestroyed()) return;
-    placeWindow();
     notchWindow.show();
     notchWindow.focus();
     sendCommand({ action: "toggleExpand" });
   });
   const voiceOk = globalShortcut.register("Control+Shift+G", () => {
     if (!notchWindow || notchWindow.isDestroyed()) return;
-    placeWindow();
     notchWindow.show();
     notchWindow.focus();
     sendCommand({ action: "toggleVoiceCall" });
@@ -320,15 +622,29 @@ if (!gotLock) {
       return permission === "media" || permission === "microphone" || permission === "audioCapture";
     });
 
+    ipcMain.on("notch-drag-start", () => {
+      beginWindowDrag();
+    });
+    ipcMain.on("notch-drag-end", () => {
+      finishWindowDrag();
+    });
+
     ipcMain.on("notch-host", (_event, payload) => {
       if (!payload || typeof payload !== "object") return;
       if (payload.type === "hitRect") {
         overlayState.hitRect = {
           x: Number(payload.x) || 0,
           y: Number(payload.y) || 0,
-          width: Number(payload.width) || 212,
-          height: Number(payload.height) || 56
+          width: Number(payload.width) || 60,
+          height: Number(payload.height) || 60
         };
+        overlayState.dragRect = {
+          x: Number(payload.dragX) || 0,
+          y: Number(payload.dragY) || 0,
+          width: Number(payload.dragWidth) || 0,
+          height: Number(payload.dragHeight) || 0
+        };
+        syncWindowToWidget();
         overlayState.isOpen = Boolean(payload.isOpen);
         overlayState.isTyping = Boolean(payload.isTyping);
         overlayState.callPhase = typeof payload.callPhase === "string" ? payload.callPhase : "idle";
@@ -361,6 +677,7 @@ if (!gotLock) {
     });
     rebuildTrayMenu();
     createNotchWindow();
+    ensureMouseButtonWatcher();
     registerGlobalHotkeys();
     cursorTimer = setInterval(updateMousePassthrough, 32);
   });
@@ -369,6 +686,8 @@ if (!gotLock) {
 app.on("will-quit", () => {
   globalShortcut.unregisterAll();
   if (cursorTimer) clearInterval(cursorTimer);
+  if (dragTimer) clearInterval(dragTimer);
+  if (mouseWatcher && !mouseWatcher.killed) mouseWatcher.kill();
   if (serverProcess && !serverProcess.killed) {
     serverProcess.kill();
   }

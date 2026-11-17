@@ -38,9 +38,9 @@ npm run install:app
 
 ### Windows
 
-Windows has no hardware notch. This fork draws the same pouch at the top center of the primary monitor.
+Windows has no camera notch, so this fork is a small floating widget you can park on any monitor. Closed, it is a circle. Open, it is a card with four rounded corners, not a bar hanging from the top of the screen. You drag it from the dotted grip, and it stays where you left it the next time you open it.
 
-Requirements: Windows 10/11, Node.js 22.5+, and Desktop Grok Bot installed and signed in.
+You need Windows 10 or 11, Node.js 22.5 or newer, and the Desktop Grok Bot app installed and signed in.
 
 ```powershell
 git clone https://github.com/manuelcastrobarinas/grokbot-notch.git
@@ -49,14 +49,43 @@ npm install
 npm start
 ```
 
-| Action | Shortcut |
+Quit from the tray icon. That also stops the local bridge.
+
+#### How to use it
+
+The closed circle only shows the bot mark. Click it, or press **Ctrl+Alt+Space**, to open the card. The same shortcut closes it again.
+
+The dotted grip is the only place that moves the card. The rest of the card is for talking, typing, and settings. A **− / +** button switches between a short card and a taller one. The gear sets that bot's voice, speed, and language. Those choices stick for that bot.
+
+Click the character, or press **Ctrl+Shift+G**, to start or end a voice call. Allow the microphone if Windows asks. While you are on a call, the arrow keys do not switch bots by themselves. They ask first: hang up and move to the other bot, yes or no. **Yes** hangs up and leaves that bot selected. **No**, or **Escape**, drops the question and keeps the call. Choosing a bot from the tray menu is a deliberate click, so that one does switch immediately and starts the call with the bot you picked.
+
+| What you want | How |
 | :--- | :--- |
-| Expand / collapse | **Ctrl+Alt+Space** |
-| Start / stop voice | **Ctrl+Shift+G** or click the bot |
-| Previous / next bot | **Left / Right** while the pouch is open |
+| Open or close the card | **Ctrl+Alt+Space**, or click the circle |
+| Move it | Drag the dotted grip |
+| Shorter or taller card | **− / +** |
+| Voice, speed, language | Gear |
+| Start or end a call | Click the character, or **Ctrl+Shift+G** |
+| Previous or next bot | **Left / Right** while the card is focused and you are not on a call. The on-screen **< / >** do the same |
+| Accidental arrow during a call | Confirm **Sí** or **No** on the card. **Escape** means no |
+| Type | Click the waves, or type a letter while the card is focused, then **Enter** |
+| Hang up from anywhere | **Escape** while a call is active, or **Ctrl+Shift+G** |
+| Close settings, clear typing, hang up, or collapse | **Escape**, in that order, when the card is focused |
 | Quit | Tray icon |
 
-Voice uses the microphone through the overlay (24 kHz PCM). Allow the microphone for Electron if Windows asks. Quit from the tray icon so the local bridge on `127.0.0.1:4789` stops with it.
+#### How it is built
+
+The Mac app is unchanged. On Windows, `npm start` runs `scripts/start.mjs`, which launches Electron (`windows/host.cjs`) and the same `server.mjs` bridge on `127.0.0.1:4789`. Electron's own Node is not used for the bridge, because it may not have `node:sqlite`. The page talks to the shell through `window.grokbotNotchHost` in `windows/preload.cjs`. It does not pretend to be the Mac `webkit.messageHandlers.notchHost`, so voice stays in the page instead of calling a Swift audio engine that is not there.
+
+The window is transparent, frameless, always on top, and absent from the taskbar. It is not dragged by the operating system (`movable: false`). The page reports the card's rectangle, and the shell resizes the window to that rectangle so clicks land on the widget. Mouse click-through is off. A hidden PowerShell helper (`windows/mouse-button.ps1`) only reports whether the left button is down and whether the cursor is on the grip. The actual move uses Electron's cursor, in DIP pixels, compared with where the drag started. Mixing PowerShell's DPI-unaware coordinates with `setPosition` walks the widget off the second monitor and makes it drift while the mouse is still. If Windows snaps the window by the same amount the cursor appears to move, that snap is absorbed instead of applied again.
+
+The saved corner is `%APPDATA%\GrokBot Notch\window-position.json`. A saved point is kept only when that corner is on some display. Hotkeys do not snap the card back. If the open card is wider than the monitor, it is placed at the left of that monitor's work area.
+
+The launch token for `/api/*` is `%APPDATA%\GrokBot Notch\launch-auth-token`. Grok Bot's saved secrets are decrypted with Windows DPAPI (CurrentUser) and then AES-256-GCM, the same `v10` safe-storage layout Chrome uses. The plaintext key is not printed and is not passed on the command line. Per-bot voice overrides live in `%USERPROFILE%\.grokbot-notch-state.json` under `voiceOverrides`. The gear writes that file and also calls `SetGrokBotAgentVoice`. Until an override matches a later change made inside Grok Bot, the override is what the call uses. Realtime speed is one of `0.75`, `1`, `1.25`, `1.5`. Language is sent as `language_hint` and omitted when the choice is auto.
+
+A call is one WebSocket plus one microphone pipeline. Starting another call, or confirming a bot change, closes every open socket first. Arrow presses used to overlap those sockets, so several bots stayed on the line and all of them answered. Each attempt has a generation number. A late tool result from an old call cannot hang up the call that replaced it.
+
+Compact or full size is remembered in `localStorage` under `grokbot-notch-size`. Left and Right are global hotkeys only while a call is active, and they only open the confirm question. They are not stolen from other apps while you are idle. Escape is global only during a call, so it can hang up without taking Escape away from every other window the rest of the time.
 
 ---
 
@@ -106,10 +135,16 @@ grokbot-notch/
 │   ├── motion-lab.js         # Flat Grok Bot character engine (shapes, expressions, morphs, gaze)
 │   └── sounds/               # Authentic UI ticks & call chimes
 ├── server.mjs                # Local Node.js bridge (auth discovery, ConnectRPC proxy, transcript sync)
-└── scripts/
-    ├── setup.sh              # One-command prerequisite check, build & launch
-    ├── build-mac-app.sh      # Compiles Swift binary & signs GrokBot Notch.app
-    └── launch.sh             # Starts local bridge server & opens GrokBot Notch.app
+├── scripts/
+│   ├── setup.sh              # One-command prerequisite check, build & launch
+│   ├── build-mac-app.sh      # Compiles Swift binary & signs GrokBot Notch.app
+│   ├── launch.sh             # Starts local bridge server & opens GrokBot Notch.app
+│   ├── setup.mjs             # Windows/macOS dispatcher for npm run setup
+│   └── start.mjs             # Windows launches Electron; macOS still runs launch.sh
+└── windows/                  # Windows only. The Mac shell does not use these.
+    ├── host.cjs              # Electron window, hotkeys, drag, tray
+    ├── preload.cjs           # grokbotNotchHost bridge
+    └── mouse-button.ps1      # Left-button and grip hit test
 ```
 
 ---
