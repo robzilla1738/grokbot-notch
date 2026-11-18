@@ -4,7 +4,18 @@ const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
 
-const ROOT_DIR = path.resolve(__dirname, "..");
+function bridgeRoot() {
+  if (app.isPackaged) return path.join(process.resourcesPath, "bridge");
+  return path.resolve(__dirname, "..");
+}
+
+function resolvePackagedNode() {
+  const bundledNode = path.join(process.resourcesPath, "node", "node.exe");
+  if (!fs.existsSync(bundledNode)) {
+    throw new Error("The bundled Node runtime is missing from this build.");
+  }
+  return bundledNode;
+}
 const SERVER_URL = "http://127.0.0.1:4789/?native=1";
 const PANEL_WIDTH = 400;
 const PANEL_HEIGHT = 340;
@@ -27,6 +38,7 @@ const overlayState = {
 };
 
 function resolveSystemNode() {
+  if (app.isPackaged) return resolvePackagedNode();
   if (process.env.GROKBOT_NODE && fs.existsSync(process.env.GROKBOT_NODE)) {
     return process.env.GROKBOT_NODE;
   }
@@ -81,15 +93,33 @@ function waitForServer() {
   });
 }
 
+function bridgeLogStream() {
+  const roaming = process.env.APPDATA || path.join(app.getPath("home"), "AppData", "Roaming");
+  const logDirectory = path.join(roaming, "GrokBot Notch");
+  fs.mkdirSync(logDirectory, { recursive: true });
+  return fs.openSync(path.join(logDirectory, "bridge.log"), "a");
+}
+
+function stopBridgeProcess() {
+  if (!serverProcess || !serverProcess.pid) return;
+  if (process.platform === "win32") {
+    spawn("taskkill", ["/PID", String(serverProcess.pid), "/T", "/F"], { windowsHide: true });
+    return;
+  }
+  serverProcess.kill();
+}
+
 async function ensureServer() {
   if (await portIsOpen()) return;
   const nodeBinary = resolveSystemNode();
+  const bridgeDirectory = bridgeRoot();
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
-  serverProcess = spawn(nodeBinary, [path.join(ROOT_DIR, "server.mjs")], {
-    cwd: ROOT_DIR,
+  const serverStdio = app.isPackaged ? ["ignore", bridgeLogStream(), bridgeLogStream()] : "inherit";
+  serverProcess = spawn(nodeBinary, [path.join(bridgeDirectory, "server.mjs")], {
+    cwd: bridgeDirectory,
     env,
-    stdio: "inherit",
+    stdio: serverStdio,
     windowsHide: true
   });
   serverProcess.on("exit", () => {
@@ -275,7 +305,9 @@ function syncWindowToWidget() {
 
 function ensureMouseButtonWatcher() {
   if (mouseWatcher || !notchWindow || notchWindow.isDestroyed()) return;
-  const scriptPath = path.join(__dirname, "mouse-button.ps1");
+  const scriptPath = app.isPackaged
+    ? path.join(bridgeRoot(), "windows", "mouse-button.ps1")
+    : path.join(__dirname, "mouse-button.ps1");
   mouseWatcher = spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath], {
     windowsHide: true,
     stdio: ["pipe", "pipe", "ignore"]
@@ -419,22 +451,43 @@ function saveWindowPosition() {
   }
 }
 
+function windowsSymbolPath() {
+  const candidates = [
+    path.join(process.resourcesPath, "icon-16.png"),
+    path.join(__dirname, "..", "build", "icon-16.png")
+  ];
+  return candidates.find((candidate) => fs.existsSync(candidate)) || null;
+}
+
 function createTrayIcon() {
-  const size = 16;
-  const bitmap = Buffer.alloc(size * size * 4);
-  for (let row = 0; row < size; row += 1) {
-    for (let column = 0; column < size; column += 1) {
-      const deltaX = column - 7.5;
-      const deltaY = row - 7.5;
-      const inside = deltaX * deltaX + deltaY * deltaY <= 36;
-      const offset = (row * size + column) * 4;
-      bitmap[offset] = inside ? 0xf8 : 0;
-      bitmap[offset + 1] = inside ? 0x59 : 0;
-      bitmap[offset + 2] = inside ? 0x8e : 0;
-      bitmap[offset + 3] = inside ? 255 : 0;
-    }
+  const symbolPath = windowsSymbolPath();
+  if (symbolPath) {
+    const symbol = nativeImage.createFromPath(symbolPath);
+    if (!symbol.isEmpty()) return symbol;
   }
-  return nativeImage.createFromBitmap(bitmap, { width: size, height: size });
+  return nativeImage.createEmpty();
+}
+
+function windowsOpensAtLogin() {
+  if (!app.isPackaged || process.platform !== "win32") return false;
+  return app.getLoginItemSettings().openAtLogin;
+}
+
+function setWindowsOpensAtLogin(enabled) {
+  if (!app.isPackaged || process.platform !== "win32") return;
+  app.setLoginItemSettings({
+    openAtLogin: enabled,
+    path: process.execPath
+  });
+}
+
+function rememberWindowsStartupChoice() {
+  if (!app.isPackaged || process.platform !== "win32") return;
+  const choiceFile = path.join(app.getPath("userData"), "startup-chosen.json");
+  if (fs.existsSync(choiceFile)) return;
+  setWindowsOpensAtLogin(true);
+  fs.mkdirSync(path.dirname(choiceFile), { recursive: true });
+  fs.writeFileSync(choiceFile, JSON.stringify({ openAtLogin: true }));
 }
 
 function rebuildTrayMenu() {
@@ -447,9 +500,9 @@ function rebuildTrayMenu() {
   }));
 
   const template = [
-    { label: "Toggle notch\tCtrl+Alt+Space", click: () => sendCommand({ action: "toggleExpand" }) },
+    { label: "Abrir o cerrar\tCtrl+Alt+Espacio", click: () => sendCommand({ action: "toggleExpand" }) },
     {
-      label: overlayState.callPhase === "idle" ? "Start voice call\tCtrl+Shift+G" : "End voice call\tCtrl+Shift+G",
+      label: overlayState.callPhase === "idle" ? "Iniciar llamada\tCtrl+Mayús+G" : "Colgar\tCtrl+Mayús+G",
       click: () => sendCommand({ action: "toggleVoiceCall" })
     },
     { type: "separator" }
@@ -459,18 +512,24 @@ function rebuildTrayMenu() {
   }
   template.push(
     {
-      label: "Open Grok Bot",
+      label: "Abrir Grok Bot",
       click: () => {
         const executable = grokBotExecutable();
         if (executable) shell.openPath(executable);
       }
     },
+    {
+      label: "Abrir con Windows",
+      type: "checkbox",
+      checked: windowsOpensAtLogin(),
+      visible: app.isPackaged,
+      click: (menuItem) => setWindowsOpensAtLogin(menuItem.checked)
+    },
     { type: "separator" },
-    { label: "Quit GrokBot Notch", click: () => app.quit() }
+    { label: "Salir", click: () => app.quit() }
   );
   tray.setContextMenu(Menu.buildFromTemplate(template));
-  const mark = overlayState.callPhase === "idle" ? "✦" : "🎙";
-  tray.setToolTip(`${mark} ${overlayState.botName}`);
+  tray.setToolTip(overlayState.callPhase === "idle" ? `GrokBot-Notch · ${overlayState.botName}` : `GrokBot-Notch · en llamada con ${overlayState.botName}`);
 }
 
 function syncExpandedShortcuts() {
@@ -533,6 +592,7 @@ function createNotchWindow() {
   notchWindow = new BrowserWindow({
     width: PANEL_WIDTH,
     height: PANEL_HEIGHT,
+    title: "GrokBot-Notch",
     show: false,
     frame: false,
     transparent: true,
@@ -615,6 +675,7 @@ if (!gotLock) {
   });
 
   app.whenReady().then(async () => {
+    rememberWindowsStartupChoice();
     session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
       callback(permission === "media" || permission === "microphone" || permission === "audioCapture");
     });
@@ -688,9 +749,7 @@ app.on("will-quit", () => {
   if (cursorTimer) clearInterval(cursorTimer);
   if (dragTimer) clearInterval(dragTimer);
   if (mouseWatcher && !mouseWatcher.killed) mouseWatcher.kill();
-  if (serverProcess && !serverProcess.killed) {
-    serverProcess.kill();
-  }
+  stopBridgeProcess();
 });
 
 app.on("window-all-closed", () => {
