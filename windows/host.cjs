@@ -284,23 +284,117 @@ function clampWindowOrigin(originX, originY, width, height) {
   };
 }
 
-const WIDGET_MARGIN_X = 0;
-const WIDGET_MARGIN_BOTTOM = 0;
+// A DIP length only lands on a whole device pixel when it is a multiple of this step.
+// At 125% the step is 4, so a size that is exact on a 100% screen can be 1 device
+// pixel too wide or too narrow after setBounds rounding.
+function dipGridStep(scaleFactor) {
+  const scaleThousandths = Math.round((scaleFactor || 1) * 1000);
+  let dividend = Math.abs(scaleThousandths);
+  let divisor = 1000;
+  while (divisor !== 0) {
+    const remainder = dividend % divisor;
+    dividend = divisor;
+    divisor = remainder;
+  }
+  return 1000 / (dividend || 1);
+}
+
+function displayForBounds(bounds) {
+  return screen.getDisplayMatching({
+    x: Math.round(bounds.x),
+    y: Math.round(bounds.y),
+    width: Math.max(1, Math.round(bounds.width)),
+    height: Math.max(1, Math.round(bounds.height))
+  });
+}
+
+function snapLengthToDevicePixels(length, step) {
+  if (step <= 1) return Math.max(1, Math.round(length));
+  const units = Math.ceil((length - 0.01) / step);
+  return Math.max(step, units * step);
+}
+
+function snapOriginToDevicePixels(origin, displayOrigin, step) {
+  if (step <= 1) return Math.round(origin);
+  const relative = origin - displayOrigin;
+  return displayOrigin + Math.round(relative / step) * step;
+}
+
+function widgetBoundsFromHit(currentBounds) {
+  const hit = overlayState.hitRect;
+  if (!hit || hit.width < 8 || hit.height < 8) return null;
+  const clamped = clampWindowOrigin(currentBounds.x + hit.x, currentBounds.y + hit.y, hit.width, hit.height);
+  const display = displayForBounds({
+    x: clamped.x,
+    y: clamped.y,
+    width: hit.width,
+    height: hit.height
+  });
+  const step = dipGridStep(display.scaleFactor || 1);
+  return {
+    x: snapOriginToDevicePixels(clamped.x, display.bounds.x, step),
+    y: snapOriginToDevicePixels(clamped.y, display.bounds.y, step),
+    width: snapLengthToDevicePixels(hit.width, step),
+    height: snapLengthToDevicePixels(hit.height, step)
+  };
+}
+
+let fitTimer = null;
+let pendingFit = null;
+
+function scheduleWidgetFit(width, height) {
+  pendingFit = { width, height };
+  if (fitTimer) clearTimeout(fitTimer);
+  fitTimer = setTimeout(() => {
+    fitTimer = null;
+    if (!pendingFit) return;
+    if (draggingWindow) {
+      scheduleWidgetFit(pendingFit.width, pendingFit.height);
+      return;
+    }
+    sendCommand({ action: "fitWidget", width: pendingFit.width, height: pendingFit.height });
+  }, 120);
+}
+
+function applyWidgetBounds() {
+  if (!notchWindow || notchWindow.isDestroyed()) return;
+  const bounds = notchWindow.getBounds();
+  const snapped = widgetBoundsFromHit(bounds);
+  if (!snapped) return;
+  const sameSize = snapped.width === bounds.width && snapped.height === bounds.height;
+  const sameOrigin = Math.abs(snapped.x - bounds.x) < 1 && Math.abs(snapped.y - bounds.y) < 1;
+  if (!sameSize || !sameOrigin) {
+    notchWindow.setBounds(snapped);
+  }
+  scheduleWidgetFit(snapped.width, snapped.height);
+}
 
 function syncWindowToWidget() {
   if (!notchWindow || notchWindow.isDestroyed() || draggingWindow || mouseButtonState === "down") return;
-  const hit = overlayState.hitRect;
-  if (!hit || hit.width < 8 || hit.height < 8) return;
-  const targetWidth = Math.round(hit.width + WIDGET_MARGIN_X * 2);
-  const targetHeight = Math.round(hit.height + WIDGET_MARGIN_BOTTOM);
-  const expectedX = Math.round((targetWidth - hit.width) / 2);
+  applyWidgetBounds();
+}
+
+function rebaseDragToLandedWindow() {
+  if (!dragOrigin || !notchWindow || notchWindow.isDestroyed()) return;
+  const landed = notchWindow.getBounds();
+  const cursor = screen.getCursorScreenPoint();
+  dragOrigin.originX = landed.x;
+  dragOrigin.originY = landed.y;
+  dragOrigin.landedX = landed.x;
+  dragOrigin.landedY = landed.y;
+  dragOrigin.cursorX = cursor.x;
+  dragOrigin.cursorY = cursor.y;
+  dragOrigin.seenCursorX = cursor.x;
+  dragOrigin.seenCursorY = cursor.y;
+}
+
+function applySnappedSizeDuringDrag() {
+  if (!draggingWindow || !notchWindow || notchWindow.isDestroyed()) return;
   const bounds = notchWindow.getBounds();
-  const sizeMatches = Math.abs(bounds.width - targetWidth) <= 1 && Math.abs(bounds.height - targetHeight) <= 1;
-  const placeMatches = Math.abs(hit.x - expectedX) <= 2 && Math.abs(hit.y) <= 2;
-  if (sizeMatches && placeMatches) return;
-  if (sizeMatches) return;
-  const nextOrigin = clampWindowOrigin(bounds.x + hit.x - expectedX, bounds.y + hit.y, targetWidth, targetHeight);
-  notchWindow.setBounds({ x: nextOrigin.x, y: nextOrigin.y, width: targetWidth, height: targetHeight });
+  const snapped = widgetBoundsFromHit(bounds);
+  if (!snapped || (snapped.width === bounds.width && snapped.height === bounds.height)) return;
+  notchWindow.setBounds({ x: bounds.x, y: bounds.y, width: snapped.width, height: snapped.height });
+  rebaseDragToLandedWindow();
 }
 
 function ensureMouseButtonWatcher() {
@@ -348,6 +442,17 @@ function applyDragPosition() {
   if (!dragOrigin || !notchWindow || notchWindow.isDestroyed()) return;
   const point = screen.getCursorScreenPoint();
   const bounds = notchWindow.getBounds();
+  const scaleFactor = displayForBounds(bounds).scaleFactor || 1;
+  if (dragOrigin.scaleFactor == null) dragOrigin.scaleFactor = scaleFactor;
+  if (scaleFactor !== dragOrigin.scaleFactor) {
+    dragOrigin.scaleFactor = scaleFactor;
+    const snapped = widgetBoundsFromHit(bounds);
+    if (snapped) {
+      notchWindow.setBounds(snapped);
+      rebaseDragToLandedWindow();
+    }
+    return;
+  }
 
   if (dragOrigin.seenCursorX != null) {
     const cursorShiftX = point.x - dragOrigin.seenCursorX;
@@ -406,6 +511,7 @@ function finishWindowDrag() {
     clearInterval(dragTimer);
     dragTimer = null;
   }
+  applyWidgetBounds();
   if (didMove) saveWindowPosition();
 }
 
@@ -422,6 +528,7 @@ function beginWindowDrag() {
     seenCursorY: cursor.y,
     landedX: bounds.x,
     landedY: bounds.y,
+    scaleFactor: displayForBounds(bounds).scaleFactor || 1,
     moved: false
   };
   draggingWindow = true;
@@ -705,7 +812,8 @@ if (!gotLock) {
           width: Number(payload.dragWidth) || 0,
           height: Number(payload.dragHeight) || 0
         };
-        syncWindowToWidget();
+        if (draggingWindow) applySnappedSizeDuringDrag();
+        else syncWindowToWidget();
         overlayState.isOpen = Boolean(payload.isOpen);
         overlayState.isTyping = Boolean(payload.isTyping);
         overlayState.callPhase = typeof payload.callPhase === "string" ? payload.callPhase : "idle";
@@ -728,6 +836,13 @@ if (!gotLock) {
       app.quit();
       return;
     }
+
+    screen.on("display-metrics-changed", () => {
+      setTimeout(() => {
+        if (draggingWindow) return;
+        sendCommand({ action: "remeasure" });
+      }, 50);
+    });
 
     tray = new Tray(createTrayIcon());
     tray.on("click", () => {

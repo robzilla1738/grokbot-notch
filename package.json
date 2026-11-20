@@ -1,6 +1,6 @@
 {
   "name": "grokbot-notch",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Notch companion for Desktop Grok Bot on macOS, and a top-of-screen overlay on Windows, with flat Motion Lab characters and live xAI Realtime Voice Mode",
   "license": "MIT",
   "type": "module",

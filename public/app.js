@@ -17,6 +17,9 @@ const isNativeHost =
 if (!isNativeHost) {
   document.body.classList.add("browser-preview");
 }
+if (window.grokbotNotchHost) {
+  document.body.classList.add("windows-host");
+}
 
 function apiFetch(url, options = {}) {
   const headers = new Headers(options.headers || {});
@@ -240,8 +243,14 @@ function renderVoiceSettings(bot) {
   fillVoiceSelect(dom.voiceLanguageSelect, state.languages, bot.voiceLanguage || "auto", "id", "label");
 }
 
+function clearFittedSize() {
+  dom.pouch.style.width = "";
+  dom.pouch.style.height = "";
+}
+
 function setWidgetCompact(compact) {
   state.compact = Boolean(compact);
+  clearFittedSize();
   dom.pouch.dataset.size = state.compact ? "compact" : "full";
   const label = state.compact ? "Agrandar" : "Achicar";
   dom.sizeBtn.title = label;
@@ -256,6 +265,7 @@ function setWidgetCompact(compact) {
 
 function setSettingsOpen(open) {
   state.settingsOpen = Boolean(open);
+  clearFittedSize();
   dom.pouch.dataset.settings = String(state.settingsOpen);
   if (state.settingsOpen) {
     setTypingMode(false);
@@ -405,19 +415,26 @@ window.addEventListener(
 // NATIVE HIT-RECT SYNC
 // ============================================================================
 function reportHitRectToNative() {
-  const rect = dom.pouch.getBoundingClientRect();
+  const pouch = dom.pouch;
+  const fittedWidth = pouch.style.width;
+  const fittedHeight = pouch.style.height;
+  pouch.style.width = "";
+  pouch.style.height = "";
+  const naturalRect = pouch.getBoundingClientRect();
+  pouch.style.width = fittedWidth;
+  pouch.style.height = fittedHeight;
   const gripRect = dom.dragHandle.getBoundingClientRect();
   const bot = getSelectedBot();
   postNativeMessage({
     type: "hitRect",
-    x: Math.round(rect.left),
-    y: Math.round(rect.top),
-    width: Math.round(rect.width),
-    height: Math.round(rect.height),
-    dragX: Math.round(gripRect.left),
-    dragY: Math.round(gripRect.top),
-    dragWidth: Math.round(gripRect.width),
-    dragHeight: Math.round(gripRect.height),
+    x: naturalRect.left,
+    y: naturalRect.top,
+    width: naturalRect.width,
+    height: naturalRect.height,
+    dragX: gripRect.left,
+    dragY: gripRect.top,
+    dragWidth: gripRect.width,
+    dragHeight: gripRect.height,
     isOpen: state.expanded,
     isTyping: state.typing || state.settingsOpen,
     callPhase: state.call.phase,
@@ -429,10 +446,25 @@ const resizeObserver = new ResizeObserver(() => reportHitRectToNative());
 resizeObserver.observe(dom.pouch);
 if (dom.dragHandle) resizeObserver.observe(dom.dragHandle);
 
+function watchDevicePixelRatio() {
+  const resolutionQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+  resolutionQuery.addEventListener(
+    "change",
+    () => {
+      clearFittedSize();
+      reportHitRectToNative();
+      watchDevicePixelRatio();
+    },
+    { once: true }
+  );
+}
+watchDevicePixelRatio();
+
 function setExpanded(expanded) {
   const next = Boolean(expanded);
   if (state.expanded === next) return;
   state.expanded = next;
+  clearFittedSize();
   dom.pouch.dataset.expanded = String(next);
   if (!next) setSettingsOpen(false);
   if (next) {
@@ -1542,6 +1574,21 @@ window.__notchCommand = async (cmd) => {
         setExpanded(true);
       }
       break;
+    case "remeasure":
+      clearFittedSize();
+      reportHitRectToNative();
+      break;
+    case "fitWidget": {
+      const fittedWidth = Number(cmd.width);
+      const fittedHeight = Number(cmd.height);
+      if (fittedWidth >= 8 && fittedHeight >= 8) {
+        const nextWidth = `${Math.round(fittedWidth)}px`;
+        const nextHeight = `${Math.round(fittedHeight)}px`;
+        if (dom.pouch.style.width !== nextWidth) dom.pouch.style.width = nextWidth;
+        if (dom.pouch.style.height !== nextHeight) dom.pouch.style.height = nextHeight;
+      }
+      break;
+    }
     case "setNotchGeometry":
       if (cmd.notchWidth && cmd.notchWidth > 100) {
         document.documentElement.style.setProperty("--notch-width", `${cmd.notchWidth}px`);
