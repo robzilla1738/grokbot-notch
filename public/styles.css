@@ -45,6 +45,11 @@ body.browser-preview {
   pointer-events: none;
 }
 
+body.windows-host .notch-stage {
+  justify-content: flex-start;
+  align-items: flex-start;
+}
+
 /* The U-shaped Black Notch Pouch */
 .notch-pouch {
   position: relative;
@@ -53,9 +58,7 @@ body.browser-preview {
   width: 212px;
   height: calc(var(--notch-height) + 24px);
   border-radius: 0 0 18px 18px;
-  box-shadow:
-    0 4px 14px rgba(0, 0, 0, 0.32),
-    inset 0 -0.5px 0 rgba(255, 255, 255, 0.14);
+  box-shadow: inset 0 -0.5px 0 rgba(255, 255, 255, 0.14);
   transition:
     width 300ms var(--spring),
     height 300ms var(--spring),
@@ -67,15 +70,34 @@ body.browser-preview {
   overflow: visible;
 }
 
+.notch-pouch.is-dragging .drag-handle {
+  cursor: grabbing;
+}
+
 .notch-pouch[data-expanded="true"] {
-  width: 268px;
-  height: 244px;
-  border-radius: 0 0 34px 34px;
-  box-shadow:
-    0 10px 24px rgba(0, 0, 0, 0.38),
-    inset 0 -0.5px 0 rgba(255, 255, 255, 0.15),
-    inset 0.5px 0 0 rgba(255, 255, 255, 0.08),
-    inset -0.5px 0 0 rgba(255, 255, 255, 0.08);
+  --card-pad: 14px;
+  --chrome: 28px;
+  width: 560px;
+  height: auto;
+  border-radius: 28px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.notch-pouch[data-expanded="true"][data-size="compact"] {
+  width: max-content;
+  min-width: 560px;
+  height: auto;
+  border-radius: 22px;
+}
+
+.notch-pouch[data-expanded="true"][data-size="compact"][data-settings="true"] {
+  width: 560px;
+  height: auto;
+}
+
+.notch-pouch[data-expanded="true"] .notch-ear {
+  display: none;
 }
 
 /* Concave Top Ears that blend into the top bezel at y = 0 */
@@ -100,6 +122,8 @@ body.browser-preview {
    COLLAPSED STATE BAR (peeks 24px below the 32px hardware camera notch)
    ============================================================================ */
 .collapsed-bar {
+  position: relative;
+  z-index: 1;
   margin-top: var(--notch-height);
   width: 100%;
   height: 24px;
@@ -116,8 +140,81 @@ body.browser-preview {
   transition: opacity 150ms ease;
 }
 
+.notch-pouch[data-expanded="false"] {
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+}
+
+.notch-pouch[data-expanded="false"] .notch-ear {
+  display: none;
+}
+
+.notch-pouch[data-expanded="false"] .collapsed-bar {
+  margin-top: 0;
+  width: 60px;
+  height: 60px;
+  padding: 0 0 14px;
+  border-radius: 50%;
+  justify-content: center;
+}
+
+.notch-pouch[data-expanded="false"] .collapsed-name,
+.notch-pouch[data-expanded="false"] .collapsed-waves {
+  display: none;
+}
+
+.notch-pouch[data-expanded="false"] .collapsed-mark {
+  width: 28px;
+  height: 28px;
+}
+
+.notch-pouch[data-expanded="false"] .collapsed-mark svg {
+  width: 28px;
+  height: 28px;
+}
+
+.notch-pouch[data-expanded="false"][data-call="live"] {
+  box-shadow: inset 0 0 0 2px var(--bot-ink);
+}
+
 .notch-pouch[data-expanded="true"] .collapsed-bar {
   display: none;
+}
+
+.drag-handle {
+  position: absolute;
+  z-index: 6;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 48px;
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(245, 245, 247, 0.9);
+  cursor: grab;
+  touch-action: none;
+}
+
+.notch-pouch[data-expanded="true"] .drag-handle {
+  top: var(--card-pad);
+  left: var(--card-pad);
+  width: var(--chrome);
+  height: var(--chrome);
+}
+
+.notch-pouch[data-expanded="false"] .drag-handle {
+  top: auto;
+  right: 6px;
+  bottom: 0;
+  left: 6px;
+  width: auto;
+  height: 32px;
+  border-radius: 0 0 26px 26px;
+  background: rgba(255, 255, 255, 0.16);
+  transform: none;
 }
 
 .collapsed-mark {
@@ -181,7 +278,85 @@ body.browser-preview {
 
 .notch-pouch[data-expanded="true"] .expanded-content {
   display: flex;
+  height: auto;
+  padding: calc(var(--card-pad) + var(--chrome) + 16px) 24px 22px;
   animation: pouchReveal 220ms var(--spring);
+}
+
+.notch-pouch[data-size="compact"] .expanded-content {
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 16px;
+  width: max-content;
+  height: auto;
+  padding: 18px 96px 18px 58px;
+}
+
+.notch-pouch[data-size="compact"][data-settings="true"] .expanded-content {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: calc(var(--card-pad) + var(--chrome) + 16px) 24px 20px;
+}
+
+.notch-pouch[data-size="compact"] .bot-character-btn,
+.notch-pouch[data-size="compact"] .bot-mark-mount {
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+  flex-shrink: 0;
+}
+
+.notch-pouch[data-size="compact"] .bot-mark-mount svg {
+  width: 34px;
+  height: 34px;
+}
+
+.notch-pouch[data-size="compact"] .main-star-badge {
+  width: 12px;
+  height: 12px;
+  right: 0;
+  bottom: 0;
+}
+
+.notch-pouch[data-size="compact"] .bot-title-block {
+  align-items: flex-start;
+  flex: 0 0 auto;
+  min-width: max-content;
+  max-width: none;
+  gap: 2px;
+}
+
+.notch-pouch[data-size="compact"] .bot-name-label,
+.notch-pouch[data-size="compact"] .voice-summary,
+.notch-pouch[data-size="compact"] .bot-status-caption {
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.notch-pouch[data-size="compact"] .bot-name-label {
+  font-size: 13px;
+}
+
+.notch-pouch[data-size="compact"] .bottom-nav-row {
+  width: auto;
+  flex-shrink: 0;
+  gap: 0;
+}
+
+.notch-pouch[data-size="compact"] .nav-chevron-btn {
+  display: none;
+}
+
+.notch-pouch[data-size="compact"] .audio-waves-btn,
+.notch-pouch[data-size="compact"] .type-form {
+  width: 160px;
 }
 
 @keyframes pouchReveal {
@@ -256,7 +431,7 @@ body.browser-preview {
   flex-direction: column;
   align-items: center;
   gap: 2px;
-  max-width: 224px;
+  max-width: 460px;
   text-align: center;
 }
 
@@ -274,7 +449,7 @@ body.browser-preview {
   font-size: 11px;
   line-height: 1.25;
   color: var(--text-secondary);
-  max-width: 216px;
+  max-width: 460px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -282,6 +457,140 @@ body.browser-preview {
 
 .bot-status-caption[hidden] {
   display: none !important;
+}
+
+.voice-summary {
+  font-size: 11px;
+  line-height: 1.25;
+  color: var(--text-muted);
+  max-width: 460px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gear-btn {
+  display: none;
+  position: absolute;
+  top: calc(var(--notch-height) + 8px);
+  right: 10px;
+  z-index: 2;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: rgba(245, 245, 247, 0.62);
+  place-items: center;
+  cursor: pointer;
+}
+
+.size-btn {
+  display: none;
+  position: absolute;
+  top: calc(var(--notch-height) + 8px);
+  right: 40px;
+  z-index: 2;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: rgba(245, 245, 247, 0.62);
+  place-items: center;
+  cursor: pointer;
+}
+
+.notch-pouch[data-expanded="true"] .gear-btn,
+.notch-pouch[data-expanded="true"] .size-btn {
+  display: grid;
+  top: var(--card-pad);
+}
+
+.notch-pouch[data-expanded="true"] .gear-btn {
+  right: var(--card-pad);
+}
+
+.notch-pouch[data-expanded="true"] .size-btn {
+  right: calc(var(--card-pad) + var(--chrome) + 8px);
+}
+
+.notch-pouch[data-expanded="true"][data-size="compact"] .drag-handle,
+.notch-pouch[data-expanded="true"][data-size="compact"] .gear-btn,
+.notch-pouch[data-expanded="true"][data-size="compact"] .size-btn {
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.notch-pouch[data-expanded="true"][data-size="compact"][data-settings="true"] .drag-handle,
+.notch-pouch[data-expanded="true"][data-size="compact"][data-settings="true"] .gear-btn,
+.notch-pouch[data-expanded="true"][data-size="compact"][data-settings="true"] .size-btn {
+  top: var(--card-pad);
+  transform: none;
+}
+
+.notch-pouch[data-expanded="true"] .bot-name-label,
+.notch-pouch[data-expanded="true"] .voice-summary,
+.notch-pouch[data-expanded="true"] .bot-status-caption {
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.notch-pouch[data-expanded="true"]:not([data-size="compact"]) .bot-name-label,
+.notch-pouch[data-expanded="true"]:not([data-size="compact"]) .voice-summary,
+.notch-pouch[data-expanded="true"]:not([data-size="compact"]) .bot-status-caption {
+  white-space: normal;
+}
+
+.notch-pouch[data-size="compact"] .size-icon-shrink,
+.notch-pouch:not([data-size="compact"]) .size-icon-grow {
+  display: none;
+}
+
+.gear-btn:hover,
+.size-btn:hover,
+.notch-pouch[data-settings="true"] .gear-btn {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.voice-settings {
+  display: none;
+  width: 100%;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.notch-pouch[data-settings="true"] .voice-settings {
+  display: flex;
+}
+
+.notch-pouch[data-settings="true"] .bot-character-btn,
+.notch-pouch[data-settings="true"] .bottom-nav-row,
+.notch-pouch[data-settings="true"] .voice-summary {
+  display: none;
+}
+
+.voice-settings label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.voice-settings select {
+  width: 100%;
+  height: 30px;
+  border: 0;
+  border-radius: 9px;
+  background: #1c1c1e;
+  color: var(--text-primary);
+  padding: 0 8px;
+  font: inherit;
+  font-size: 13px;
 }
 
 /* 3. BOTTOM ROW: < (Last Bot) | Audio Waves (Tap to Type) | > (Next Bot) */
@@ -405,4 +714,54 @@ body.browser-preview {
 .type-input::placeholder {
   color: var(--text-muted);
   text-align: left;
+}
+
+.switch-confirm {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  width: max-content;
+  min-width: 240px;
+  margin: 0 14px 14px;
+  padding: 12px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.switch-confirm[hidden] {
+  display: none !important;
+}
+
+.switch-confirm p {
+  font-size: 13px;
+  line-height: 1.35;
+  text-align: center;
+  white-space: normal;
+}
+
+.switch-confirm-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.switch-confirm-no,
+.switch-confirm-yes {
+  flex: 1;
+  height: 32px;
+  border: 0;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.switch-confirm-no {
+  background: rgba(255, 255, 255, 0.1);
+  color: #f5f5f7;
+}
+
+.switch-confirm-yes {
+  background: #f5f5f7;
+  color: #111111;
 }

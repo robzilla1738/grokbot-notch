@@ -6,20 +6,33 @@ import crypto from "node:crypto";
 import { execFile, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
+import { decryptWindowsSafeStorageValue } from "./windows/safe-storage.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, "public");
 const PORT = Number(process.env.PORT || 4789);
 
 const HOME = os.homedir();
-const CURSOR_STATE_DB = path.join(HOME, "Library/Application Support/Cursor/User/globalStorage/state.vscdb");
-const GROKBOT_SUPPORT_DIR = path.join(HOME, "Library/Application Support/Grok Bot");
+const IS_WINDOWS = process.platform === "win32";
+
+function roamingSupportDir(...parts) {
+  if (IS_WINDOWS) {
+    const roaming = process.env.APPDATA || path.join(HOME, "AppData", "Roaming");
+    return path.join(roaming, ...parts);
+  }
+  return path.join(HOME, "Library", "Application Support", ...parts);
+}
+
+const CURSOR_STATE_DB = IS_WINDOWS
+  ? path.join(roamingSupportDir("Cursor", "User", "globalStorage"), "state.vscdb")
+  : path.join(HOME, "Library/Application Support/Cursor/User/globalStorage/state.vscdb");
+const GROKBOT_SUPPORT_DIR = roamingSupportDir("Grok Bot");
 const GROKBOT_SECRETS_FILE = path.join(GROKBOT_SUPPORT_DIR, "sand-secrets.json");
-const GROKBOT_DOT_SETTINGS = path.join(HOME, ".grokbot/settings.json");
+const GROKBOT_DOT_SETTINGS = path.join(HOME, ".grokbot", "settings.json");
 const PERSISTENCE_DIR = path.join(GROKBOT_SUPPORT_DIR, "sand-client-persistence");
 const ROSTER_AVATARS_DIR = path.join(GROKBOT_SUPPORT_DIR, "roster-avatars");
 const LOCAL_STATE_FILE = path.join(HOME, ".grokbot-notch-state.json");
-const NOTCH_SUPPORT_DIR = path.join(HOME, "Library/Application Support/GrokBot Notch");
+const NOTCH_SUPPORT_DIR = roamingSupportDir("GrokBot Notch");
 const AUTH_TOKEN_FILE = path.join(NOTCH_SUPPORT_DIR, "launch-auth-token");
 const BACKEND_BASE = process.env.SAND_BACKEND_URL || "https://api2.cursor.sh";
 
@@ -63,8 +76,31 @@ const SPEEDS = [
   { value: 0.75, label: "0.75×" },
   { value: 1, label: "1.0×" },
   { value: 1.25, label: "1.25×" },
-  { value: 1.5, label: "1.5×" },
-  { value: 2, label: "2.0×" }
+  { value: 1.5, label: "1.5×" }
+];
+
+const LANGUAGES = [
+  { id: "auto", label: "Auto" },
+  { id: "en", label: "English" },
+  { id: "es-MX", label: "Spanish (Mexico)" },
+  { id: "es-ES", label: "Spanish (Spain)" },
+  { id: "pt-BR", label: "Portuguese (Brazil)" },
+  { id: "pt-PT", label: "Portuguese (Portugal)" },
+  { id: "fr", label: "French" },
+  { id: "de", label: "German" },
+  { id: "it", label: "Italian" },
+  { id: "ja", label: "Japanese" },
+  { id: "ko", label: "Korean" },
+  { id: "zh", label: "Chinese (Simplified)" },
+  { id: "hi", label: "Hindi" },
+  { id: "ar-EG", label: "Arabic (Egypt)" },
+  { id: "ar-SA", label: "Arabic (Saudi Arabia)" },
+  { id: "ar-AE", label: "Arabic (United Arab Emirates)" },
+  { id: "bn", label: "Bengali" },
+  { id: "id", label: "Indonesian" },
+  { id: "ru", label: "Russian" },
+  { id: "tr", label: "Turkish" },
+  { id: "vi", label: "Vietnamese" }
 ];
 
 const DEFAULT_COLORS = ["brown", "red", "orange", "yellow", "green", "cyan", "blue", "violet", "magenta", "gray"];
@@ -273,6 +309,9 @@ function decryptSafeStorageValue(storedValue) {
   if (!storedValue || typeof storedValue !== "string") return null;
   if (storedValue.startsWith("plaintext:v1:")) {
     return Buffer.from(storedValue.slice("plaintext:v1:".length), "base64").toString("utf8");
+  }
+  if (IS_WINDOWS) {
+    return decryptWindowsSafeStorageValue(storedValue);
   }
   let base64Ciphertext = storedValue;
   if (storedValue.startsWith("scoped:v1:")) {
@@ -530,14 +569,16 @@ function buildBackendHeaders(auth) {
     "x-cursor-client-type": "sand",
     "x-cursor-client-version": "0.71.2",
     "x-sand-box-namespace": "prod",
-    "x-cursor-client-os": "darwin",
+    "x-cursor-client-os": IS_WINDOWS ? "win32" : "darwin",
     "x-cursor-client-source": "sand-desktop",
     "x-ghost-mode": "true",
     "x-cursor-timezone": Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
     "x-request-id": crypto.randomUUID(),
     "content-type": "application/json",
     "connect-protocol-version": "1",
-    "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Sand/0.71.2 Safari/537.36"
+    "user-agent": IS_WINDOWS
+      ? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Sand/0.71.2 Chrome/130.0.0.0 Safari/537.36"
+      : "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Sand/0.71.2 Safari/537.36"
   };
   if (auth.teamId != null) {
     headers["x-cursor-team-id"] = String(auth.teamId);
@@ -583,7 +624,7 @@ async function callGrokBotRpc(method, body = {}, { accountScope = null, localSna
   const targetScope = accountScope || (body?.agentId ? scopeForAgentId(body.agentId, localSnap) : null);
   const auth = readAuthContext(localSnap, targetScope);
   if (!auth.accessToken) {
-    throw new Error("Sign in to Grok Bot (or allow Keychain access) so GrokBot Notch can authenticate this account.");
+    throw new Error("Sign in to Grok Bot so GrokBot Notch can authenticate this account.");
   }
   const url = `${BACKEND_BASE}/aiserver.v1.GrokBotService/${method}`;
   const res = await fetch(url, {
@@ -784,7 +825,8 @@ async function getBootstrapData() {
     sections: activeSections,
     bots,
     voices: VOICES,
-    speeds: SPEEDS
+    speeds: SPEEDS,
+    languages: LANGUAGES
   };
 }
 
@@ -926,6 +968,18 @@ const MIME_TYPES = {
   ".wav": "audio/wav",
   ".mp3": "audio/mpeg"
 };
+
+function openGrokBotDesktop() {
+  if (IS_WINDOWS) {
+    const localAppData = process.env.LOCALAPPDATA || path.join(HOME, "AppData", "Local");
+    const executable = path.join(localAppData, "Programs", "Grok Bot", "Grok Bot.exe");
+    if (fs.existsSync(executable)) {
+      execFile(executable, [], { windowsHide: false }, () => {});
+    }
+    return;
+  }
+  execFile("/usr/bin/open", ["-a", "/Applications/Grok Bot.app"], () => {});
+}
 
 const server = http.createServer(async (req, res) => {
   const security = validateHostAndOrigin(req);
@@ -1125,7 +1179,7 @@ const server = http.createServer(async (req, res) => {
 
     const openMatch = /^\/api\/bot\/([^/]+)\/open-desktop$/.exec(pathname);
     if (req.method === "POST" && openMatch) {
-      execFile("/usr/bin/open", ["-a", "/Applications/Grok Bot.app"], () => {});
+      openGrokBotDesktop();
       return sendJson(res, 200, { ok: true }, cors);
     }
 

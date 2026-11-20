@@ -19,6 +19,32 @@
         </svg>
 
         <!-- COLLAPSED BAR (visible when data-expanded="false") -->
+        <button id="size-btn" class="size-btn" type="button" title="Achicar">
+          <svg class="size-icon-shrink" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+            <path d="M6 12h12" />
+          </svg>
+          <svg class="size-icon-grow" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+            <path d="M12 6v12M6 12h12" />
+          </svg>
+        </button>
+        <button id="voice-settings-btn" class="gear-btn" type="button" title="Configuración de voz">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" />
+            <path d="M19.4 13.5a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V19a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H4a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H10a1.7 1.7 0 0 0 1-1.5V4a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V10c.3.6.9 1 1.5 1H20a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z" />
+          </svg>
+        </button>
+        <button id="drag-handle" class="drag-handle" type="button" title="Arrastra para moverlo" aria-label="Arrastrar">
+          <svg viewBox="0 0 16 22" width="12" height="16" aria-hidden="true">
+            <circle cx="5" cy="3" r="1.35" fill="currentColor" />
+            <circle cx="11" cy="3" r="1.35" fill="currentColor" />
+            <circle cx="5" cy="8" r="1.35" fill="currentColor" />
+            <circle cx="11" cy="8" r="1.35" fill="currentColor" />
+            <circle cx="5" cy="13" r="1.35" fill="currentColor" />
+            <circle cx="11" cy="13" r="1.35" fill="currentColor" />
+            <circle cx="5" cy="18" r="1.35" fill="currentColor" />
+            <circle cx="11" cy="18" r="1.35" fill="currentColor" />
+          </svg>
+        </button>
         <button id="collapsed-bar" class="collapsed-bar" type="button" title="Expand GrokBot Notch (⌥Space)">
           <span id="collapsed-mark" class="collapsed-mark"></span>
           <span id="collapsed-name" class="collapsed-name">Chief</span>
@@ -47,8 +73,24 @@
           <!-- Middle: Bot Name + Subtle Live Caption/Status -->
           <div class="bot-title-block">
             <span id="bot-name-label" class="bot-name-label">Chief</span>
+            <span id="voice-summary" class="voice-summary">Liora · 1.0× · Auto</span>
             <span id="bot-status-caption" class="bot-status-caption" hidden></span>
           </div>
+
+          <form id="voice-settings" class="voice-settings">
+            <label>
+              Voz
+              <select id="voice-id-select"></select>
+            </label>
+            <label>
+              Velocidad
+              <select id="voice-speed-select"></select>
+            </label>
+            <label>
+              Idioma
+              <select id="voice-language-select"></select>
+            </label>
+          </form>
 
           <!-- Bottom Row: < (Last Bot) | Audio Waves (Tap to Type) | > (Next Bot) -->
           <div class="bottom-nav-row">
@@ -92,6 +134,13 @@
                 <path d="M5.75 3.5 10.25 8l-4.5 4.5" />
               </svg>
             </button>
+          </div>
+        </div>
+        <div id="switch-confirm" class="switch-confirm" hidden>
+          <p id="switch-confirm-text">¿Colgar y pasar al otro bot?</p>
+          <div class="switch-confirm-actions">
+            <button id="switch-confirm-no" class="switch-confirm-no" type="button">No</button>
+            <button id="switch-confirm-yes" class="switch-confirm-yes" type="button">Sí</button>
           </div>
         </div>
       </div>

@@ -1,30 +1,100 @@
 {
   "name": "grokbot-notch",
-  "version": "1.0.0",
-  "description": "Native macOS Notch companion for Desktop Grok Bot with flat Motion Lab characters and live xAI Realtime Voice Mode",
+  "version": "1.0.1",
+  "description": "Notch companion for Desktop Grok Bot on macOS, and a top-of-screen overlay on Windows, with flat Motion Lab characters and live xAI Realtime Voice Mode",
   "license": "MIT",
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "https://github.com/robzilla1738/grokbot-notch.git"
+    "url": "https://github.com/manuelcastrobarinas/grokbot-notch.git"
   },
   "keywords": [
     "grok",
     "grok-bot",
     "xai",
     "macos",
+    "windows",
     "notch",
     "voice-mode",
     "realtime"
   ],
+  "main": "windows/host.cjs",
   "engines": {
     "node": ">=22.5.0"
   },
   "scripts": {
-    "setup": "./scripts/setup.sh",
-    "install:app": "./scripts/setup.sh --install",
-    "start": "./scripts/launch.sh",
+    "setup": "node scripts/setup.mjs",
+    "setup:mac": "bash scripts/setup.sh",
+    "install:app": "bash scripts/setup.sh --install",
+    "start": "node scripts/start.mjs",
+    "start:mac": "bash scripts/launch.sh",
     "server": "node server.mjs",
-    "build:mac": "./scripts/build-mac-app.sh"
+    "build:mac": "bash scripts/build-mac-app.sh",
+    "build:win": "node scripts/fetch-node-win.mjs && node scripts/make-windows-icon.mjs && electron-builder --win nsis"
+  },
+  "build": {
+    "appId": "com.grokbot.notch.windows",
+    "productName": "GrokBot-Notch",
+    "asar": true,
+    "files": [
+      "windows/host.cjs",
+      "windows/preload.cjs",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "server.mjs",
+        "to": "bridge/server.mjs"
+      },
+      {
+        "from": "public",
+        "to": "bridge/public"
+      },
+      {
+        "from": "windows/safe-storage.mjs",
+        "to": "bridge/windows/safe-storage.mjs"
+      },
+      {
+        "from": "windows/mouse-button.ps1",
+        "to": "bridge/windows/mouse-button.ps1"
+      },
+      {
+        "from": "build/node/node.exe",
+        "to": "node/node.exe"
+      },
+      {
+        "from": "build/icon-16.png",
+        "to": "icon-16.png"
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "build/icon.ico",
+      "signExecutable": false,
+      "artifactName": "GrokBot-Notch-Setup.exe"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "GrokBot-Notch",
+      "uninstallDisplayName": "GrokBot-Notch",
+      "installerLanguages": [
+        "es_ES",
+        "en_US"
+      ],
+      "displayLanguageSelector": false,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico"
+    }
+  },
+  "devDependencies": {
+    "electron": "^33.4.11",
+    "electron-builder": "^26.18.0"
   }
 }
